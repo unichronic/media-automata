@@ -37,6 +37,7 @@ INSTAGRAM_CUSTOM_STORY_SHARE_ACTIVITY = (
 ANDROID_RUNTIME = "android-native-uiautomator2"
 ANDROID_DISPLAY_SIZE = "720x1280"
 ANDROID_DISPLAY_DENSITY = "320"
+INSTAGRAM_APK_ROOT = Path("runtime/android-apks")
 LOGIN_MARKERS = (
     "log in",
     "login",
@@ -79,6 +80,32 @@ class AndroidRuntimeError(RuntimeError):
     def __init__(self, message: str, error_code: ErrorCode = ErrorCode.INTERNAL_ERROR):
         super().__init__(message)
         self.error_code = error_code
+
+
+def instagram_apk_install_candidates(apk_root: Path = INSTAGRAM_APK_ROOT) -> list[list[Path]]:
+    """Return installable Instagram APK bundles from the runtime APK cache.
+
+    Split APK directories are returned as [base, config...] for `adb install-multiple`.
+    Standalone APKs at the root are returned as single-file install candidates.
+    """
+
+    if not apk_root.exists():
+        return []
+
+    candidates: list[tuple[int, float, list[Path]]] = []
+    for directory in apk_root.iterdir():
+        if not directory.is_dir():
+            continue
+        base = directory / "com.instagram.android.apk"
+        if not base.exists():
+            continue
+        split_apks = sorted(path for path in directory.glob("*.apk") if path != base)
+        candidates.append((0, base.stat().st_mtime, [base, *split_apks]))
+
+    for apk in apk_root.glob("*.apk"):
+        candidates.append((1, apk.stat().st_mtime, [apk]))
+
+    return [paths for _, _, paths in sorted(candidates, key=lambda item: (item[0], -item[1]))]
 
 
 class InstagramNativeWorker:
@@ -864,11 +891,35 @@ class InstagramNativeWorker:
     def _ensure_instagram_installed(self, settings: Settings, serial: str) -> None:
         completed = self._adb(settings, ["-s", serial, "shell", "pm", "path", INSTAGRAM_ANDROID_PACKAGE], timeout=20)
         output = f"{completed.stdout}\n{completed.stderr}".strip()
-        if completed.returncode != 0 or "package:" not in output:
-            raise AndroidRuntimeError(
-                f"{INSTAGRAM_ANDROID_PACKAGE} is not installed on Android device {serial}.",
-                ErrorCode.LOGIN_REQUIRED,
-            )
+        if completed.returncode == 0 and "package:" in output:
+            return
+
+        install_errors: list[str] = []
+        for candidate in instagram_apk_install_candidates():
+            command = ["install-multiple", "-r", *[str(path) for path in candidate]]
+            if len(candidate) == 1:
+                command = ["install", "-r", str(candidate[0])]
+            installed = self._adb(settings, ["-s", serial, *command], timeout=300)
+            install_output = f"{installed.stdout}\n{installed.stderr}".strip()
+            if installed.returncode == 0 and "success" in install_output.lower():
+                verified = self._adb(
+                    settings,
+                    ["-s", serial, "shell", "pm", "path", INSTAGRAM_ANDROID_PACKAGE],
+                    timeout=20,
+                )
+                verified_output = f"{verified.stdout}\n{verified.stderr}".strip()
+                if verified.returncode == 0 and "package:" in verified_output:
+                    return
+            install_errors.append(install_output[:500] or f"install returned {installed.returncode}")
+
+        if install_errors:
+            detail = " Last install error: " + install_errors[-1]
+        else:
+            detail = f" No APK bundle was found under {INSTAGRAM_APK_ROOT}."
+        raise AndroidRuntimeError(
+            f"{INSTAGRAM_ANDROID_PACKAGE} is not installed on Android device {serial}.{detail}",
+            ErrorCode.LOGIN_REQUIRED,
+        )
 
     def _grant_instagram_permissions(self, settings: Settings, serial: str, artifacts: AndroidArtifacts) -> None:
         permissions = (
