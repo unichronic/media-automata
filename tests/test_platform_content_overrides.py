@@ -1,5 +1,6 @@
 from media_automata.agents.graph import (
     apply_platform_content_overrides,
+    dedupe_platform_contents,
     extract_platform_content_overrides,
     normalize_intent_from_raw_command,
 )
@@ -63,6 +64,38 @@ def test_apply_platform_content_overrides_preserves_instagram_destination_modes(
     assert updated[2].hashtags == []
     assert updated[3].text == "hello"
     assert updated[3].hashtags == []
+
+
+def test_dedupe_platform_contents_removes_duplicate_single_destination_platforms() -> None:
+    contents = [
+        PlatformContent(platform=Platform.LINKEDIN, text="first linkedin"),
+        PlatformContent(platform=Platform.LINKEDIN, text="duplicate linkedin"),
+        PlatformContent(platform=Platform.X, text="first x"),
+        PlatformContent(platform=Platform.X, text="duplicate x"),
+        PlatformContent(platform=Platform.INSTAGRAM, caption="feed", mode="feed"),
+        PlatformContent(
+            platform=Platform.INSTAGRAM,
+            caption="direct story",
+            mode="story",
+            extra={"instagram_story_source": "media"},
+        ),
+        PlatformContent(
+            platform=Platform.INSTAGRAM,
+            caption="feed post story",
+            mode="story",
+            extra={"instagram_story_source": "feed_post"},
+        ),
+    ]
+
+    deduped = dedupe_platform_contents(contents)
+
+    assert [(item.platform, item.primary_text, item.mode) for item in deduped] == [
+        (Platform.LINKEDIN, "first linkedin", "single"),
+        (Platform.X, "first x", "single"),
+        (Platform.INSTAGRAM, "feed", "feed"),
+        (Platform.INSTAGRAM, "direct story", "story"),
+        (Platform.INSTAGRAM, "feed post story", "story"),
+    ]
 
 
 def test_normalize_intent_from_raw_command_keeps_all_platform_schedule_safe() -> None:

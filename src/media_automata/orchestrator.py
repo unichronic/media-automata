@@ -132,7 +132,7 @@ class CommandOrchestrator:
 
         scheduled_for = None
         if plan.intent.intent == "schedule" or plan.intent.mode == JobMode.SCHEDULE:
-            scheduled_for = parse_scheduled_for(plan.intent.scheduled_for, message.body)
+            scheduled_for = parse_scheduled_for(message.body, plan.intent.scheduled_for)
             if not scheduled_for:
                 self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "scheduled_for_not_parsed"})
                 text = f"Job {job.id} failed: I could not parse the scheduled time."

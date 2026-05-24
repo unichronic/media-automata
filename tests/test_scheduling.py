@@ -12,6 +12,18 @@ def test_parse_month_first_schedule_without_year() -> None:
     assert scheduled_for == datetime(2026, 5, 26, 6, 30, tzinfo=UTC)
 
 
+def test_user_command_schedule_takes_precedence_over_llm_iso_guess() -> None:
+    now = datetime(2026, 5, 24, 20, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    scheduled_for = parse_scheduled_for(
+        "/post schedule this for all 3 platforms at May 26 12 PM",
+        "2026-05-26T12:00:00+00:00",
+        now=now,
+    )
+
+    assert scheduled_for == datetime(2026, 5, 26, 6, 30, tzinfo=UTC)
+
+
 def test_parse_relative_schedule() -> None:
     now = datetime(2026, 5, 19, 20, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
 

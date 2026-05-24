@@ -126,7 +126,7 @@ class SocialAgentGraph:
         ]
         expanded = expand_instagram_destinations(contents, intent=intent, raw_command=raw_command)
         overridden = apply_platform_content_overrides(expanded, raw_command)
-        return dedupe_instagram_destinations(overridden)
+        return dedupe_platform_contents(overridden)
 
 
 def normalize_platform_content(content: PlatformContent) -> PlatformContent:
@@ -185,10 +185,18 @@ def expand_instagram_destinations(
 
 
 def dedupe_instagram_destinations(contents: list[PlatformContent]) -> list[PlatformContent]:
+    return dedupe_platform_contents(contents)
+
+
+def dedupe_platform_contents(contents: list[PlatformContent]) -> list[PlatformContent]:
     deduped: list[PlatformContent] = []
     seen_instagram_modes: set[str] = set()
+    seen_single_platforms: set[Platform] = set()
     for content in contents:
         if content.platform != Platform.INSTAGRAM:
+            if content.platform in seen_single_platforms:
+                continue
+            seen_single_platforms.add(content.platform)
             deduped.append(content)
             continue
         mode = (
