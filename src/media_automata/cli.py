@@ -39,7 +39,7 @@ def main() -> None:
 
     monitor_parser = subparsers.add_parser(
         "monitor-once",
-        help="Run one production monitor pass; intended for systemd timers.",
+        help="Run one production monitor pass; intended for scheduled deployment checks.",
     )
     monitor_parser.add_argument("--account", default="main_brand")
     monitor_parser.add_argument("--no-recover-openwa", action="store_true")

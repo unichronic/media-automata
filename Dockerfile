@@ -16,8 +16,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
-COPY apps ./apps
-COPY workers ./workers
 
 RUN pip install --no-cache-dir uv \
     && uv pip install --system . \

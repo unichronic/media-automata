@@ -14,13 +14,6 @@ build/
 *.egg-info/
 
 runtime/**
-!runtime/
-!runtime/profiles/
-!runtime/artifacts/
-!runtime/storage/
-!runtime/profiles/.gitkeep
-!runtime/artifacts/.gitkeep
-!runtime/storage/.gitkeep
 
 *.sqlite
 *.sqlite3
