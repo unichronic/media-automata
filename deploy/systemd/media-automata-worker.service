@@ -1,0 +1,17 @@
+[Unit]
+Description=Media Automata Browser Worker
+After=network-online.target media-automata-api.service media-automata-redroid.service
+Wants=network-online.target media-automata-redroid.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/unichronic/media_automata
+EnvironmentFile=/home/unichronic/media_automata/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/home/unichronic/media_automata/.venv/bin/python -m playwright install chromium
+ExecStart=/home/unichronic/media_automata/.venv/bin/python -m media_automata.cli worker --loop
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target

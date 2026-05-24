@@ -1,0 +1,52 @@
+[project]
+name = "media-automata"
+version = "0.1.0"
+description = "WhatsApp-controlled browser-agent social publishing automation."
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.136.0",
+  "uvicorn[standard]>=0.30.0",
+  "pydantic>=2.12.0",
+  "pydantic-settings>=2.0.0",
+  "sqlalchemy>=2.0.0",
+  "httpx>=0.28.0",
+  "langgraph>=1.0.0",
+  "python-multipart>=0.0.20",
+  "browser-use>=0.12.7",
+  "playwright>=1.56.0",
+  "pillow>=10.0.0",
+  "uiautomator2>=3.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=9.0.0",
+  "pytest-asyncio>=1.0.0",
+  "ruff>=0.9.0",
+  "pyright>=1.1.0",
+]
+
+[project.scripts]
+media-automata = "media_automata.cli:main"
+
+[build-system]
+requires = ["setuptools>=75.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pyright]
+venvPath = "."
+venv = ".venv"

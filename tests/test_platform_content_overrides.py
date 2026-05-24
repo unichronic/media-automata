@@ -1,0 +1,79 @@
+from media_automata.agents.graph import (
+    apply_platform_content_overrides,
+    extract_platform_content_overrides,
+    normalize_intent_from_raw_command,
+)
+from media_automata.schemas import CommandIntent, JobMode, Platform, PlatformContent
+
+
+def test_extract_platform_content_overrides_from_command_lines() -> None:
+    raw_command = """\
+/post schedule this for all 3 platforms at may 20 17:45
+Instagram caption - gg
+Twitter - short x copy
+LinkedIn - hello
+"""
+
+    overrides = extract_platform_content_overrides(raw_command)
+
+    assert overrides == {
+        Platform.INSTAGRAM: "gg",
+        Platform.X: "short x copy",
+        Platform.LINKEDIN: "hello",
+    }
+
+
+def test_extract_platform_content_overrides_accepts_caption_without_separator() -> None:
+    raw_command = """\
+/post this at 1:55 may 21
+Insta caption wall of glory
+Twitter caption - GGs
+LinkedIn caption lessgoo
+Also add the insta post to insta story after its has been posted
+"""
+
+    overrides = extract_platform_content_overrides(raw_command)
+
+    assert overrides == {
+        Platform.INSTAGRAM: "wall of glory",
+        Platform.X: "GGs",
+        Platform.LINKEDIN: "lessgoo",
+    }
+
+
+def test_apply_platform_content_overrides_preserves_instagram_destination_modes() -> None:
+    contents = [
+        PlatformContent(platform=Platform.INSTAGRAM, caption="generated", mode="feed", hashtags=["tag"]),
+        PlatformContent(platform=Platform.INSTAGRAM, caption="generated", mode="story", hashtags=["tag"]),
+        PlatformContent(platform=Platform.X, text="generated", hashtags=["tag"]),
+        PlatformContent(platform=Platform.LINKEDIN, text="generated", hashtags=["tag"]),
+    ]
+
+    updated = apply_platform_content_overrides(
+        contents,
+        "Instagram caption: gg\nTwitter - short x copy\nLinkedIn - hello",
+    )
+
+    assert updated[0].caption == "gg"
+    assert updated[0].mode == "feed"
+    assert updated[0].hashtags == []
+    assert updated[1].caption == "gg"
+    assert updated[1].mode == "story"
+    assert updated[2].text == "short x copy"
+    assert updated[2].hashtags == []
+    assert updated[3].text == "hello"
+    assert updated[3].hashtags == []
+
+
+def test_normalize_intent_from_raw_command_keeps_all_platform_schedule_safe() -> None:
+    intent = CommandIntent(intent="publish", mode=JobMode.PUBLISH, platforms=[])
+
+    normalized = normalize_intent_from_raw_command(
+        intent,
+        "/post schedule this for all 3 platforms at may 20 17:45",
+    )
+
+    assert normalized.intent == "schedule"
+    assert normalized.mode == JobMode.SCHEDULE
+    assert normalized.platforms == [Platform.LINKEDIN, Platform.X, Platform.INSTAGRAM]
+    assert normalized.scheduled_for == "/post schedule this for all 3 platforms at may 20 17:45"

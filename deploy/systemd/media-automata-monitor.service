@@ -1,0 +1,11 @@
+[Unit]
+Description=Media Automata Production Monitor
+After=network-online.target media-automata-api.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/unichronic/media_automata
+EnvironmentFile=/home/unichronic/media_automata/.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/unichronic/media_automata/.venv/bin/python -m media_automata.cli monitor-once
