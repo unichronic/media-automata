@@ -33,6 +33,9 @@ INSTAGRAM_USERNAME
 INSTAGRAM_PASSWORD
 ```
 
+`OPENWA_SESSION_ID` can be either the OpenWA session UUID or the human session name, for example `main`.
+The first session still needs to be created and paired once through OpenWA.
+
 Production OpenWA URL:
 
 ```text
