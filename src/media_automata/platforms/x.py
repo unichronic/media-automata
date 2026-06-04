@@ -6,6 +6,43 @@ from media_automata.platforms.playwright_helpers import body_text, click_first, 
 from media_automata.platforms.profile import persistent_browser_args, prepare_persistent_profile
 from media_automata.schemas import ErrorCode, PlatformResult, PlatformTaskPayload
 
+X_AUTH_CONTROL_SELECTORS = [
+    '[data-testid="SideNav_NewTweet_Button"]',
+    '[aria-label="Home timeline"]',
+    'a[href="/home"]',
+    '[data-testid="AppTabBar_Home_Link"]',
+    '[data-testid="SideNav_AccountSwitcher_Button"]',
+]
+X_LOGIN_INPUT_SELECTORS = [
+    'input[name="password"]',
+    'input[name="text"]',
+    'input[autocomplete="username"]',
+]
+X_CHALLENGE_MARKERS = ("verification", "captcha", "suspicious", "enter the code")
+X_AUTH_MARKERS = ("what’s happening?", "what's happening?", "your home timeline", "post", "messages", "notifications")
+
+
+def classify_x_auth_state(
+    text: str,
+    url: str,
+    *,
+    login_input_visible: bool = False,
+    authenticated_control_visible: bool = False,
+) -> str:
+    page_text = text.lower()
+    current_url = url.lower()
+    if any(marker in page_text for marker in X_CHALLENGE_MARKERS):
+        return "challenge"
+    if authenticated_control_visible:
+        return "authenticated"
+    if "login" in current_url or "i/flow/login" in current_url or login_input_visible:
+        return "login"
+    if any(marker in page_text for marker in X_AUTH_MARKERS):
+        return "authenticated"
+    if "x.com/home" in current_url or "twitter.com/home" in current_url:
+        return "loading"
+    return "unknown"
+
 
 class XWorker(BrowserUsePlatformWorker):
     allowed_domains = ["x.com", "*.x.com", "twitter.com", "*.twitter.com"]
@@ -45,16 +82,23 @@ class XWorker(BrowserUsePlatformWorker):
         screenshots: list[str] = []
         credentials = context.settings.platform_login_credentials(str(payload.platform))
 
+        async def has_visible_locator(page, selectors: list[str]) -> bool:
+            for selector in selectors:
+                locator = page.locator(selector).first
+                try:
+                    if await locator.is_visible(timeout=750):
+                        return True
+                except Exception:
+                    continue
+            return False
+
         async def classify(page) -> str:
-            page_text = (await body_text(page)).lower()
-            url = page.url.lower()
-            if any(marker in page_text for marker in ["verification", "captcha", "suspicious", "enter the code"]):
-                return "challenge"
-            if "login" in url or "i/flow/login" in url or await page.locator('input[name="password"]').count():
-                return "login"
-            if any(marker in page_text for marker in ["home", "post", "messages", "notifications", "profile"]):
-                return "authenticated"
-            return "unknown"
+            return classify_x_auth_state(
+                await body_text(page),
+                page.url,
+                login_input_visible=await has_visible_locator(page, X_LOGIN_INPUT_SELECTORS),
+                authenticated_control_visible=await has_visible_locator(page, X_AUTH_CONTROL_SELECTORS),
+            )
 
         async def submit_identifier(page, value: str) -> None:
             field = await first_visible(
@@ -111,8 +155,14 @@ class XWorker(BrowserUsePlatformWorker):
 
         async def ensure_authenticated(page) -> str:
             await page.goto(self.auth_start_url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(3500)
-            state = await classify(page)
+            state = "loading"
+            for attempt in range(8):
+                await page.wait_for_timeout(2000 if attempt else 3500)
+                state = await classify(page)
+                if state in {"authenticated", "login", "challenge"}:
+                    break
+                if attempt == 3:
+                    await page.goto(self.auth_start_url, wait_until="domcontentloaded", timeout=60000)
             if state == "login":
                 state = await login_once(page)
             return state

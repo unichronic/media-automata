@@ -32,6 +32,18 @@ def test_parse_relative_schedule() -> None:
     assert scheduled_for == datetime(2026, 5, 20, 4, 0, tzinfo=UTC)
 
 
+def test_parse_schedule_prefers_command_line_over_later_caption_date() -> None:
+    now = datetime(2026, 6, 2, 23, 20, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    scheduled_for = parse_scheduled_for(
+        "/post schedule this for linkedin at June 5 23:45\n"
+        "LinkedIn - API scheduled quoted media smoke 2026-06-02 23:19 IST",
+        now=now,
+    )
+
+    assert scheduled_for == datetime(2026, 6, 5, 18, 15, tzinfo=UTC)
+
+
 def test_is_future_schedule() -> None:
     now = datetime(2026, 5, 19, 12, 0, tzinfo=UTC)
 

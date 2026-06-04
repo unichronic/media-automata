@@ -1399,6 +1399,18 @@ class InstagramNativeWorker:
         payload: PlatformTaskPayload,
         artifacts: AndroidArtifacts,
     ) -> bool:
+        width, height = self._display_size(device)
+        self._tap(device, int(width * 0.30), int(height * 0.80))
+        self._wait(2)
+        self._capture(device, context, payload, "share-sheet-opened-coordinate", artifacts)
+        if self._screen_has_any(device, ("add to story", "copy link", "share to", "send to")):
+            return True
+        try:
+            device.press("back")
+        except Exception:
+            pass
+        self._wait(1)
+
         share_descriptions = ["Send post", "Share post", "Share", "Send"]
         if self._click_any_description(device, share_descriptions, timeout=5):
             self._wait(2)
@@ -1409,7 +1421,6 @@ class InstagramNativeWorker:
             self._capture(device, context, payload, "share-sheet-opened-text", artifacts)
             return True
 
-        width, height = self._display_size(device)
         for attempt in range(3):
             device.swipe(width // 2, int(height * 0.78), width // 2, int(height * 0.33), 0.25)
             self._wait(1)
@@ -1442,6 +1453,25 @@ class InstagramNativeWorker:
         payload: PlatformTaskPayload,
         artifacts: AndroidArtifacts,
     ) -> bool:
+        width, height = self._display_size(device)
+        for x_ratio, y_ratio in ((0.13, 0.81), (0.12, 0.80)):
+            self._tap(device, int(width * x_ratio), int(height * y_ratio))
+            if self._wait_for_story_editor_after_add_click(
+                device,
+                context,
+                payload,
+                artifacts,
+                f"story-editor-opened-coordinate-{int(x_ratio * 100)}-{int(y_ratio * 100)}",
+            ):
+                return True
+            self._dismiss_story_prompts(device)
+            if not self._screen_has_any(device, ("add to story", "copy link", "share to", "send to")):
+                try:
+                    device.press("back")
+                except Exception:
+                    pass
+                self._wait(1)
+
         if self._click_add_to_story_marker(device):
             return self._wait_for_story_editor_after_add_click(
                 device,
@@ -1451,7 +1481,6 @@ class InstagramNativeWorker:
                 "story-editor-opened",
             )
 
-        width, height = self._display_size(device)
         share_row_y = int(height * 0.61)
         sweeps = (
             ("forward", int(width * 0.86), int(width * 0.14), 4),
@@ -1554,6 +1583,7 @@ class InstagramNativeWorker:
         artifacts: AndroidArtifacts,
     ) -> bool:
         device_path = self._push_media_to_device(settings, serial, media_path)
+        self._register_media_in_store(settings, serial, device_path, media_path)
         device_uri = f"file://{device_path}"
         content_uri = self._media_store_content_uri(settings, serial, device_path, media_path)
         mime_type = self._media_mime_type(media_path)
@@ -1701,12 +1731,23 @@ class InstagramNativeWorker:
         self._capture(device, context, payload, "direct-story-gallery-home", artifacts)
         width, height = self._display_size(device)
         if not (
-            self._click_any_text(device, ["Your story"], timeout=3)
-            or self._click_any_description(device, ["Your story"], timeout=3)
+            self._click_any_resource_id(device, [f"{INSTAGRAM_ANDROID_PACKAGE}:id/creation_tab"], timeout=4)
+            or self._click_any_description(device, ["Create"], timeout=4)
         ):
-            device.click(int(width * 0.23), int(height * 0.39))
-        self._wait(5)
+            device.click(width // 2, int(height * 0.96))
+        self._wait(4)
         self._dismiss_story_prompts(device)
+        self._capture(device, context, payload, "direct-story-create-tab", artifacts)
+
+        if not self._story_camera_visible(device):
+            if not (
+                self._click_any_resource_id(device, [f"{INSTAGRAM_ANDROID_PACKAGE}:id/cam_dest_story"], timeout=4)
+                or self._click_any_text(device, ["STORY", "Story"], timeout=4)
+                or self._click_any_description(device, ["STORY", "Story"], timeout=4)
+            ):
+                device.click(int(width * 0.66), int(height * 0.95))
+            self._wait(4)
+            self._dismiss_story_prompts(device)
         self._capture(device, context, payload, "direct-story-camera", artifacts)
 
         if not (
@@ -1804,6 +1845,8 @@ class InstagramNativeWorker:
             elif action_type == "text":
                 self._add_story_text(
                     device,
+                    settings,
+                    serial,
                     str(action.get("text") or ""),
                     position=str(action.get("position") or "center"),
                     font=str(action.get("font") or ""),
@@ -1812,11 +1855,17 @@ class InstagramNativeWorker:
             elif action_type == "mention":
                 username = str(action.get("username") or "").strip().lstrip("@")
                 if username:
-                    self._add_story_text(device, f"@{username}", position=str(action.get("position") or "center"))
+                    self._add_story_text(
+                        device,
+                        settings,
+                        serial,
+                        f"@{username}",
+                        position=str(action.get("position") or "center"),
+                    )
             elif action_type == "link":
                 url = self._resolve_story_link(payload, action)
                 if url:
-                    self._add_story_link(device, url, label=str(action.get("label") or ""))
+                    self._add_story_link(device, settings, serial, url, label=str(action.get("label") or ""))
             elif action_type == "music":
                 self._add_story_music(device, str(action.get("query") or ""))
             self._dismiss_story_prompts(device)
@@ -2025,6 +2074,8 @@ class InstagramNativeWorker:
     def _add_story_text(
         self,
         device: Any,
+        settings: Settings,
+        serial: str,
         text: str,
         *,
         position: str = "center",
@@ -2035,30 +2086,58 @@ class InstagramNativeWorker:
             return
         width, height = self._display_size(device)
         if not self._click_any_resource_id(device, ["com.instagram.android:id/add_text_button"], timeout=3):
-            device.click(int(width * 0.37), int(height * 0.06))
+            device.click(int(width * 0.50), int(height * 0.06))
         self._wait(2)
         self._send_keys(device, text)
         self._select_story_font(device, font)
         self._select_story_color(device, color)
         if not self._click_done(device, timeout=3):
-            device.click(int(width * 0.88), int(height * 0.08))
+            device.click(int(width * 0.91), int(height * 0.04))
             self._wait(1)
         if self._story_text_editor_visible(device):
-            device.click(int(width * 0.90), int(height * 0.05))
+            device.click(int(width * 0.91), int(height * 0.04))
+        self._confirm_story_text_done(device, settings, serial)
         self._wait(1)
-        self._move_story_object(device, position)
-        self._deselect_story_object(device)
+        if not self._story_text_editor_visible(device):
+            self._move_story_object(device, position)
+            self._deselect_story_object(device)
+
+    def _confirm_story_text_done(self, device: Any, settings: Settings, serial: str) -> None:
+        if not self._story_text_editor_visible(device):
+            return
+        width, height = self._display_size(device)
+        for y_ratio in (0.04, 0.05, 0.08):
+            if not self._story_text_editor_visible(device):
+                return
+            self._adb(
+                settings,
+                ["-s", serial, "shell", "input", "tap", str(int(width * 0.91)), str(int(height * y_ratio))],
+                timeout=10,
+            )
+            self._wait(0.8)
+        self._hide_soft_keyboard(device)
+        for y_ratio in (0.04, 0.05, 0.08):
+            if not self._story_text_editor_visible(device):
+                return
+            self._adb(
+                settings,
+                ["-s", serial, "shell", "input", "tap", str(int(width * 0.91)), str(int(height * y_ratio))],
+                timeout=10,
+            )
+            self._wait(1)
 
     def _deselect_story_object(self, device: Any) -> None:
         width, height = self._display_size(device)
         self._tap(device, int(width * 0.08), int(height * 0.50))
         self._wait(0.4)
 
-    def _add_story_link(self, device: Any, url: str, *, label: str = "") -> None:
+    def _add_story_link(self, device: Any, settings: Settings, serial: str, url: str, *, label: str = "") -> None:
         width, height = self._display_size(device)
         if not self._open_story_sticker_tray(device):
             return
-        if not (
+        self._tap(device, int(width * 0.76), int(height * 0.68))
+        self._wait(2)
+        if not self._link_editor_visible(device) and not (
             self._click_any_text(device, ["Link", "LINK"], timeout=4)
             or self._click_any_description(device, ["Link"], timeout=4)
         ):
@@ -2067,12 +2146,80 @@ class InstagramNativeWorker:
             if not self._click_any_text(device, ["Link", "LINK"], timeout=4):
                 device.click(width // 2, int(height * 0.28))
         self._wait(2)
-        self._try_set_edit_text(device, 0, url)
-        if label:
-            self._try_set_edit_text(device, 1, label)
-        if not self._click_done(device, timeout=3):
-            device.click(int(width * 0.86), int(height * 0.08))
+        for _ in range(2):
+            self._tap(device, int(width * 0.40), int(height * 0.16))
+            self._wait(0.5)
+            self._send_keys(device, url)
+            self._wait(1)
+            if self._link_editor_done_enabled(device):
+                break
+        _ = label
+        self._commit_link_editor_input(device, settings, serial)
+        self._tap_link_editor_done(device, settings, serial)
+        self._confirm_link_editor_done(device, settings, serial)
         self._wait(2)
+
+    def _confirm_link_editor_done(self, device: Any, settings: Settings, serial: str) -> None:
+        if not self._link_editor_visible(device):
+            return
+        self._tap_link_editor_done(device, settings, serial)
+        if not self._link_editor_visible(device):
+            return
+        self._hide_soft_keyboard(device)
+        for _ in range(8):
+            if not self._link_editor_visible(device):
+                return
+            self._tap_link_editor_done(device, settings, serial)
+            self._wait(1)
+
+    def _tap_link_editor_done(self, device: Any, settings: Settings, serial: str) -> None:
+        width, height = self._display_size(device)
+        self._adb(
+            settings,
+            ["-s", serial, "shell", "input", "tap", str(int(width * 0.91)), str(int(height * 0.075))],
+            timeout=10,
+        )
+        self._wait(0.8)
+
+    def _commit_link_editor_input(self, device: Any, settings: Settings, serial: str) -> None:
+        width, height = self._display_size(device)
+        self._adb(
+            settings,
+            ["-s", serial, "shell", "input", "tap", str(int(width * 0.92)), str(int(height * 0.89))],
+            timeout=10,
+        )
+        self._wait(1)
+        if self._link_editor_visible(device) and not self._link_editor_done_enabled(device):
+            self._press_enter(device)
+            self._wait(1)
+
+    def _link_editor_visible(self, device: Any) -> bool:
+        text = self._hierarchy(device).lower()
+        return "add link" in text and (
+            "customize sticker text" in text
+            or "people who view your story" in text
+            or "see preview" in text
+        )
+
+    def _link_editor_done_enabled(self, device: Any) -> bool:
+        hierarchy = self._hierarchy(device)
+        try:
+            root = ET.fromstring(hierarchy)
+        except ET.ParseError:
+            return False
+        _, height = self._display_size(device)
+        for node in root.iter("node"):
+            label = (node.attrib.get("text") or node.attrib.get("content-desc") or "").strip().lower()
+            if label != "done":
+                continue
+            bounds = node.attrib.get("bounds", "")
+            bounds_match = re.fullmatch(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds)
+            if not bounds_match:
+                continue
+            top = int(bounds_match.group(2))
+            if top < int(height * 0.20) and node.attrib.get("enabled") == "true":
+                return True
+        return False
 
     def _add_story_music(self, device: Any, query: str) -> None:
         query = query.strip()
@@ -2241,7 +2388,16 @@ class InstagramNativeWorker:
 
     def _story_text_editor_visible(self, device: Any) -> bool:
         text = self._hierarchy(device).lower()
-        return "clear text" in text or "switch ime" in text or ("done" in text and "mention" in text)
+        return (
+            "clear text" in text
+            or "switch ime" in text
+            or "switch input method" in text
+            or "modern text style" in text
+            or "classic text style" in text
+            or "text_mention_picker" in text
+            or "text_location_picker" in text
+            or ("done" in text and "mention" in text)
+        )
 
     def _select_story_font(self, device: Any, font: str) -> None:
         if not font:
@@ -2336,6 +2492,8 @@ class InstagramNativeWorker:
         text = self._hierarchy(device).lower()
         if self._discard_prompt_visible_text(text):
             return False
+        if self._story_viewer_visible_text(text):
+            return False
         return self._story_composer_visible_text(text)
 
     def _discard_prompt_visible(self, device: Any) -> bool:
@@ -2345,6 +2503,8 @@ class InstagramNativeWorker:
         return "discard" in text and ("discard photo" in text or "discard edits" in text or "go back now" in text)
 
     def _story_composer_visible_text(self, text: str) -> bool:
+        if self._story_viewer_visible_text(text):
+            return False
         if any(
             marker in text
             for marker in (
@@ -2361,10 +2521,33 @@ class InstagramNativeWorker:
             return True
         return "your story" in text and "close friends" in text and self._story_share_to_control_visible_text(text)
 
+    def _story_camera_visible(self, device: Any) -> bool:
+        text = self._hierarchy(device).lower()
+        return (
+            f"{INSTAGRAM_ANDROID_PACKAGE}:id/gallery_preview_button" in text
+            or 'content-desc="gallery"' in text
+            or "camera_shutter_button" in text
+            or "quick_capture_root_container" in text
+        ) and "cam_dest_story" in text
+
+    @staticmethod
+    def _story_viewer_visible_text(text: str) -> bool:
+        return any(
+            marker in text
+            for marker in (
+                "reel_viewer_root",
+                "reel_viewer_header",
+                "reel_viewer_progress_bar",
+                "send message or reaction",
+                "like story",
+                "sponsored story",
+            )
+        )
+
     def _push_media_to_device(self, settings: Settings, serial: str, media_path: str) -> str:
         source = Path(media_path)
         suffix = source.suffix or ".jpg"
-        device_path = f"/sdcard/Download/media-automata-{int(time.time())}{suffix}"
+        device_path = f"/sdcard/Download/media-automata-{int(time.time() * 1000)}{suffix}"
         completed = self._adb(settings, ["-s", serial, "push", str(source), device_path], timeout=60)
         if completed.returncode != 0:
             raise AndroidRuntimeError(
@@ -2388,6 +2571,32 @@ class InstagramNativeWorker:
         )
         self._wait(2)
         return device_path
+
+    def _register_media_in_store(self, settings: Settings, serial: str, device_path: str, media_path: str) -> None:
+        mime_type = self._media_mime_type(media_path)
+        table = "video" if mime_type.startswith("video/") else "images"
+        normalized_path = device_path.replace("/sdcard/", "/storage/emulated/0/")
+        display_name = Path(device_path).name
+        self._adb(
+            settings,
+            [
+                "-s",
+                serial,
+                "shell",
+                "content",
+                "insert",
+                "--uri",
+                f"content://media/external/{table}/media",
+                "--bind",
+                f"_data:s:{normalized_path}",
+                "--bind",
+                f"mime_type:s:{mime_type}",
+                "--bind",
+                f"_display_name:s:{display_name}",
+            ],
+            timeout=30,
+        )
+        self._wait(1)
 
     def _media_store_content_uri(
         self,
@@ -3037,12 +3246,30 @@ class InstagramNativeWorker:
         return False
 
     def _try_set_edit_text(self, device: Any, index: int, value: str) -> bool:
+        result_queue: queue.Queue[bool] = queue.Queue(maxsize=1)
+
+        def set_text() -> None:
+            try:
+                field = device(className="android.widget.EditText", instance=index)
+                try:
+                    if not field.exists(timeout=0.8):
+                        result_queue.put(False)
+                        return
+                except TypeError:
+                    if not field.exists:
+                        result_queue.put(False)
+                        return
+                field.click()
+                field.set_text(value)
+                result_queue.put(True)
+            except Exception:
+                result_queue.put(False)
+
+        thread = threading.Thread(target=set_text, daemon=True)
+        thread.start()
         try:
-            field = device(className="android.widget.EditText", instance=index)
-            field.click()
-            field.set_text(value)
-            return True
-        except Exception:
+            return result_queue.get(timeout=4)
+        except queue.Empty:
             return False
 
     def _send_keys(self, device: Any, value: str) -> None:

@@ -105,9 +105,20 @@ class LinkedInWorker(BrowserUsePlatformWorker):
             return await classify(page)
 
         async def ensure_authenticated(page) -> str:
-            await page.goto(self.auth_start_url, wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(3500)
-            state = await classify(page)
+            state = "unknown"
+            last_error: Exception | None = None
+            for attempt in range(3):
+                try:
+                    await page.goto(self.auth_start_url, wait_until="domcontentloaded", timeout=60000)
+                    last_error = None
+                except Exception as exc:
+                    last_error = exc
+                await page.wait_for_timeout(3500 if attempt == 0 else 2000)
+                state = await classify(page)
+                if state in {"authenticated", "login", "challenge"}:
+                    break
+            if state == "unknown" and last_error is not None:
+                raise last_error
             if state == "login":
                 state = await login_once(page)
             return state

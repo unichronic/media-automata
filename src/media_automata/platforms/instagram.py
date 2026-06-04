@@ -291,21 +291,62 @@ class InstagramWorker(BrowserUsePlatformWorker):
                 state = await classify(page)
             return state
 
-        async def open_create_dialog(page) -> bool:
-            return await click_any(
+        async def upload_surface_ready(page) -> bool:
+            if await page.locator('input[type="file"]').count():
+                return True
+            return await has_visible_locator(
                 page,
                 [
-                    ("create-text", lambda: page.get_by_text("Create", exact=True)),
-                    ("new-post-label", lambda: page.locator('[aria-label="New post"]')),
+                    'text="Select from computer"',
+                    'text="Select from device"',
+                    'button:has-text("Select from computer")',
+                    'button:has-text("Select from device")',
+                ],
+            )
+
+        async def open_create_dialog(page) -> bool:
+            if await upload_surface_ready(page):
+                return True
+
+            create_clicked = await click_any(
+                page,
+                [
+                    ("new-post-anchor", lambda: page.locator('[aria-label="New post"]').locator('xpath=ancestor::a[1]')),
                     ("create-href", lambda: page.locator('a[href="/create/select/"]')),
                     ("create-any-href", lambda: page.locator('a[href*="/create"]')),
+                    ("create-text", lambda: page.get_by_text("Create", exact=True).locator('xpath=ancestor::a[1]')),
+                    ("create-button", lambda: page.get_by_role("button", name="Create")),
+                    ("new-post-label", lambda: page.locator('[aria-label="New post"]')),
                 ],
                 timeout=6000,
             )
+            if not create_clicked:
+                return False
+
+            for _ in range(8):
+                await page.wait_for_timeout(1000)
+                if await upload_surface_ready(page):
+                    return True
+                await click_any(
+                    page,
+                    [
+                        ("post-submenu-anchor", lambda: page.locator('span:has-text("Post"):visible').locator('xpath=ancestor::a[1]')),
+                        (
+                            "post-submenu-clickable",
+                            lambda: page.locator('span:has-text("Post"):visible').locator(
+                                'xpath=ancestor::*[@role="button" or self::button or self::a][1]'
+                            ),
+                        ),
+                        ("select-from-computer", lambda: page.get_by_text("Select from computer", exact=True)),
+                    ],
+                    timeout=1500,
+                )
+            return await upload_surface_ready(page)
 
         async def select_upload_file(page) -> bool:
             file_input = page.locator('input[type="file"]').first
             try:
+                await file_input.wait_for(state="attached", timeout=15000)
                 await file_input.set_input_files(media[0], timeout=10000)
                 return True
             except Exception:

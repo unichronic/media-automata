@@ -81,9 +81,10 @@ def parse_scheduled_for(
         value = (raw or "").strip()
         if not value:
             continue
-        parsed = _parse_iso_datetime(value, tz) or _parse_known_phrases(value, reference, tz)
-        if parsed:
-            return parsed.astimezone(UTC)
+        for candidate in _schedule_candidates(value):
+            parsed = _parse_iso_datetime(candidate, tz) or _parse_known_phrases(candidate, reference, tz)
+            if parsed:
+                return parsed.astimezone(UTC)
     return None
 
 
@@ -140,6 +141,32 @@ def _parse_known_phrases(value: str, reference: datetime, tz: ZoneInfo) -> datet
             parsed = parsed.replace(year=year + 1)
         return parsed
     return None
+
+
+def _schedule_candidates(value: str) -> list[str]:
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def add(candidate: str | None) -> None:
+        clean = (candidate or "").strip()
+        if not clean or clean in seen:
+            return
+        seen.add(clean)
+        candidates.append(clean)
+
+    lines = [line.strip() for line in value.splitlines() if line.strip()]
+    command_lines = [
+        line
+        for line in lines
+        if any(keyword in line.lower() for keyword in ("schedule", "/post", "/social", "/publish", "tomorrow", "today"))
+    ]
+
+    for line in command_lines:
+        add(line)
+    if lines:
+        add(lines[0])
+    add(value)
+    return candidates
 
 
 def _date_from_numbers(
