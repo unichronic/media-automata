@@ -67,10 +67,12 @@ async def test_get_session_resolves_named_session(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr("media_automata.whatsapp.client.httpx.AsyncClient", lambda timeout: client)
 
-    settings = Settings(
-        OPENWA_BASE_URL="http://openwa/api",
-        OPENWA_API_KEY="test-key",
-        OPENWA_SESSION_ID="main",
+    settings = Settings.model_validate(
+        {
+            "OPENWA_BASE_URL": "http://openwa/api",
+            "OPENWA_API_KEY": "test-key",
+            "OPENWA_SESSION_ID": "main",
+        }
     )
     payload = await OpenWAClient(settings).get_session()
 
@@ -93,10 +95,12 @@ async def test_get_session_uses_cached_resolved_session_id(monkeypatch: pytest.M
 
     monkeypatch.setattr("media_automata.whatsapp.client.httpx.AsyncClient", lambda timeout: client)
 
-    settings = Settings(
-        OPENWA_BASE_URL="http://openwa/api",
-        OPENWA_API_KEY="test-key",
-        OPENWA_SESSION_ID="main",
+    settings = Settings.model_validate(
+        {
+            "OPENWA_BASE_URL": "http://openwa/api",
+            "OPENWA_API_KEY": "test-key",
+            "OPENWA_SESSION_ID": "main",
+        }
     )
     openwa = OpenWAClient(settings)
 

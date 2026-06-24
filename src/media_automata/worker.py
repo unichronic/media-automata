@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -13,6 +14,7 @@ from media_automata.db.models import Asset
 from media_automata.notifications import final_job_text, task_completed_text, task_started_text
 from media_automata.platforms import build_platform_worker
 from media_automata.repository import Repository
+from media_automata.retry import exponential_backoff_seconds, is_retryable_error
 from media_automata.schemas import BrowserRunStatus, ErrorCode, PlatformResult, PlatformTaskPayload, TaskStatus
 from media_automata.storage import LocalStorage
 from media_automata.whatsapp.client import build_whatsapp_client
@@ -28,6 +30,8 @@ class WorkerRunResult:
 
 
 class BrowserTaskRunner:
+    MAX_AUTOMATIC_ATTEMPTS = 3
+
     def __init__(self, settings: Settings, worker_id: str | None = None):
         self.settings = settings
         self.worker_id = worker_id or f"worker_{uuid4().hex[:12]}"
@@ -96,7 +100,16 @@ class BrowserTaskRunner:
                         auth_status=auth_status,
                         message=auth_message,
                     )
-            repo.complete_task(task, result)
+            retry_scheduled = is_retryable_error(result.error_code) and task.attempt_count < self.MAX_AUTOMATIC_ATTEMPTS
+            if retry_scheduled:
+                delay_seconds = exponential_backoff_seconds(task.attempt_count)
+                repo.schedule_task_retry(
+                    task,
+                    result,
+                    scheduled_for=datetime.now(UTC) + timedelta(seconds=delay_seconds),
+                )
+            else:
+                repo.complete_task(task, result)
             if browser_run:
                 repo.complete_browser_run(
                     browser_run,
@@ -119,8 +132,12 @@ class BrowserTaskRunner:
                 claimed=True,
                 task_id=task.id,
                 job_id=task.job_id,
-                status=result.status,
-                message=result.message,
+                status="retrying" if retry_scheduled else result.status,
+                message=(
+                    f"{result.message} Automatic retry scheduled for {task.scheduled_for.isoformat()}."
+                    if retry_scheduled and task.scheduled_for
+                    else result.message
+                ),
             )
 
     async def run_loop(self, *, idle_sleep_seconds: float = 2.0) -> None:

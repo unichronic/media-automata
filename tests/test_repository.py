@@ -1,10 +1,13 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from threading import Barrier
 
 from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, sessionmaker
 
 from media_automata.config import Settings
-from media_automata.db.models import Base
+from media_automata.db.models import Base, PlatformTask
 from media_automata.repository import Repository
 from media_automata.schemas import JobMode, JobStatus, Platform, PlatformContent, PlatformTaskPayload, TaskStatus
 
@@ -119,3 +122,140 @@ def test_native_auth_check_does_not_overwrite_web_profile_status() -> None:
         assert profile.metadata_json["last_auth_status"] == "authenticated"
         assert profile.metadata_json["native_last_auth_status"] == "challenge_required"
         assert profile.metadata_json["native_last_auth_message"] == "native verification needed"
+
+
+def test_claim_next_task_is_atomic_across_workers(tmp_path: Path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'claims.sqlite3'}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+        future=True,
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+
+    with factory() as session:
+        repo = Repository(session, Settings())
+        repo.create_platform_task(
+            PlatformTaskPayload(
+                job_id="job_atomic",
+                platform=Platform.X,
+                account="main_brand",
+                mode=JobMode.PUBLISH,
+                content=PlatformContent(platform=Platform.X, text="only once"),
+            )
+        )
+        session.commit()
+
+    barrier = Barrier(2)
+
+    def claim(worker_id: str) -> str | None:
+        with factory() as session:
+            barrier.wait()
+            task = Repository(session, Settings()).claim_next_task(worker_id)
+            session.commit()
+            return task.id if task else None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        claimed_ids = list(pool.map(claim, ("worker_a", "worker_b")))
+
+    assert sum(task_id is not None for task_id in claimed_ids) == 1
+
+
+def test_schedule_task_retry_defers_retryable_task() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        repo = Repository(session, Settings())
+        task = repo.create_platform_task(
+            PlatformTaskPayload(
+                job_id="job_retry",
+                platform=Platform.LINKEDIN,
+                account="main_brand",
+                mode=JobMode.PUBLISH,
+                content=PlatformContent(platform=Platform.LINKEDIN, text="retry me"),
+            )
+        )
+        claimed = repo.claim_next_task("worker_1")
+        assert claimed is not None
+        repo.set_task_status(claimed, TaskStatus.RUNNING)
+        retry_at = datetime.now(UTC) + timedelta(minutes=1)
+
+        from media_automata.schemas import ErrorCode, PlatformResult
+
+        repo.schedule_task_retry(
+            claimed,
+            PlatformResult(
+                platform=Platform.LINKEDIN,
+                status="failed",
+                message="temporary network issue",
+                error_code=ErrorCode.NETWORK_TIMEOUT,
+            ),
+            scheduled_for=retry_at,
+        )
+
+        assert task.status == TaskStatus.PENDING.value
+        assert task.scheduled_for == retry_at
+        assert task.claimed_by is None
+        assert task.heartbeat_at is None
+        assert repo.claim_next_task("worker_2") is None
+
+
+def test_create_job_is_idempotent_under_concurrent_duplicate_delivery(tmp_path: Path) -> None:
+    engine = create_engine(
+        f"sqlite:///{tmp_path / 'webhooks.sqlite3'}",
+        connect_args={"check_same_thread": False, "timeout": 10},
+        future=True,
+    )
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    barrier = Barrier(2)
+
+    def create() -> str:
+        with factory() as session:
+            barrier.wait()
+            job = Repository(session, Settings()).create_job(
+                requested_by_user_id=None,
+                whatsapp_message_id="duplicate-message",
+                raw_command="/post once",
+            )
+            session.commit()
+            return job.id
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        job_ids = list(pool.map(lambda _: create(), range(2)))
+
+    assert job_ids[0] == job_ids[1]
+
+
+def test_scheduled_task_survives_database_reopen(tmp_path: Path) -> None:
+    database_path = tmp_path / "restart.sqlite3"
+    engine = create_engine(f"sqlite:///{database_path}", future=True)
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False, future=True)
+    due_at = datetime.now(UTC) + timedelta(seconds=30)
+
+    with factory() as session:
+        Repository(session, Settings()).create_platform_task(
+            PlatformTaskPayload(
+                job_id="job_restart",
+                platform=Platform.X,
+                account="main_brand",
+                mode=JobMode.SCHEDULE,
+                content=PlatformContent(platform=Platform.X, text="after restart"),
+            ),
+            scheduled_for=due_at,
+        )
+        session.commit()
+
+    engine.dispose()
+    reopened = create_engine(f"sqlite:///{database_path}", future=True)
+    with Session(reopened) as session:
+        repo = Repository(session, Settings())
+        assert repo.claim_next_task("worker_before_due") is None
+        task = session.query(PlatformTask).one()
+        task.scheduled_for = datetime.now(UTC) - timedelta(seconds=1)
+        session.commit()
+        claimed = repo.claim_next_task("worker_after_restart")
+        assert claimed is not None
+        assert claimed.job_id == "job_restart"

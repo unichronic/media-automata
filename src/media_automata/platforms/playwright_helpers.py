@@ -1,10 +1,44 @@
 from __future__ import annotations
 
+import os
+import shutil
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from media_automata.platforms.base import WorkerContext
 from media_automata.schemas import PlatformTaskPayload
+
+
+def chromium_launch_kwargs() -> dict[str, Any]:
+    configured = (
+        os.environ.get("PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH")
+        or os.environ.get("PUPPETEER_EXECUTABLE_PATH")
+    )
+    candidates = [configured]
+    browser_roots = [
+        Path(os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")),
+        Path.home() / ".cache" / "ms-playwright",
+    ]
+    for root in browser_roots:
+        if not str(root) or not root.exists():
+            continue
+        candidates.extend(
+            str(path)
+            for pattern in ("chromium-*/chrome-linux*/chrome", "chromium-*/chrome-linux/chrome")
+            for path in sorted(root.glob(pattern), reverse=True)
+        )
+    candidates.extend(
+        [
+            shutil.which("google-chrome"),
+            shutil.which("chromium"),
+            shutil.which("chromium-browser"),
+        ]
+    )
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return {"executable_path": str(candidate)}
+    return {}
 
 
 async def body_text(page: Any) -> str:

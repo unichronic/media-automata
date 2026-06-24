@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from media_automata.platforms.base import WorkerContext
 from media_automata.platforms.browser_use_worker import BrowserUsePlatformWorker, content_text, media_paths
-from media_automata.platforms.playwright_helpers import body_text, click_first, fill_textbox, first_visible, screenshot
+from media_automata.platforms.playwright_helpers import (
+    body_text,
+    chromium_launch_kwargs,
+    click_first,
+    fill_textbox,
+    first_visible,
+    screenshot,
+)
 from media_automata.platforms.profile import persistent_browser_args, prepare_persistent_profile
 from media_automata.schemas import ErrorCode, PlatformResult, PlatformTaskPayload
 
@@ -229,6 +236,7 @@ class LinkedInWorker(BrowserUsePlatformWorker):
                 headless=context.settings.browser_headless,
                 viewport={"width": 1400, "height": 1000},
                 args=persistent_browser_args(),
+                **chromium_launch_kwargs(),
             )
             page = browser.pages[0] if browser.pages else await browser.new_page()
             try:
@@ -285,6 +293,16 @@ class LinkedInWorker(BrowserUsePlatformWorker):
                     )
                     await page.wait_for_timeout(2500)
                     await screenshot(page, context, payload, "media-next", screenshots)
+                    media_page_text = (await body_text(page)).lower()
+                    if "something went wrong" in media_page_text or "please choose a file" in media_page_text:
+                        await screenshot(page, context, payload, "media-rejected", screenshots)
+                        return PlatformResult(
+                            platform=payload.platform,
+                            status="failed",
+                            message="LinkedIn rejected the uploaded media.",
+                            error_code=ErrorCode.MEDIA_UPLOAD_FAILED,
+                            raw={"auth_status": "authenticated", "screenshots": screenshots},
+                        )
                     if text.strip():
                         editor = await find_post_editor(page, timeout=7000)
                         if editor is None:

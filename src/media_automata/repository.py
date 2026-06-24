@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select
+from sqlalchemy import or_, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from media_automata.config import Settings
@@ -53,11 +54,25 @@ class Repository:
                 if contact:
                     contact.chat_id = chat_id
             return user
-        user = models.User(primary_whatsapp_number=number, name=number)
-        self.session.add(user)
-        self.session.flush()
-        contact = models.WhatsAppContact(user_id=user.id, whatsapp_number=number, chat_id=chat_id or number)
-        self.session.add(contact)
+        try:
+            with self.session.begin_nested():
+                user = models.User(primary_whatsapp_number=number, name=number)
+                self.session.add(user)
+                self.session.flush()
+                contact = models.WhatsAppContact(user_id=user.id, whatsapp_number=number, chat_id=chat_id or number)
+                self.session.add(contact)
+                self.session.flush()
+        except IntegrityError:
+            user = self.session.scalar(select(models.User).where(models.User.primary_whatsapp_number == number))
+            if user is None:
+                raise
+            if chat_id:
+                contact = self.session.scalar(
+                    select(models.WhatsAppContact).where(models.WhatsAppContact.whatsapp_number == number)
+                )
+                if contact:
+                    contact.chat_id = chat_id
+            return user
         self.audit("user.created", {"user_id": user.id, "whatsapp_number": number})
         return user
 
@@ -228,16 +243,27 @@ class Repository:
             )
             if existing:
                 return existing
-        job = models.Job(
-            requested_by_user_id=requested_by_user_id,
-            whatsapp_message_id=whatsapp_message_id,
-            status=JobStatus.RECEIVED.value,
-            mode=mode.value,
-            raw_command=raw_command,
-            scheduled_for=scheduled_for,
-        )
-        self.session.add(job)
-        self.session.flush()
+        try:
+            with self.session.begin_nested():
+                job = models.Job(
+                    requested_by_user_id=requested_by_user_id,
+                    whatsapp_message_id=whatsapp_message_id,
+                    status=JobStatus.RECEIVED.value,
+                    mode=mode.value,
+                    raw_command=raw_command,
+                    scheduled_for=scheduled_for,
+                )
+                self.session.add(job)
+                self.session.flush()
+        except IntegrityError:
+            if not whatsapp_message_id:
+                raise
+            existing = self.session.scalar(
+                select(models.Job).where(models.Job.whatsapp_message_id == whatsapp_message_id)
+            )
+            if existing is None:
+                raise
+            return existing
         self.audit("job.created", {"job_id": job.id}, job_id=job.id)
         return job
 
@@ -289,22 +315,56 @@ class Repository:
 
     def claim_next_task(self, worker_id: str, platform: str | None = None) -> models.PlatformTask | None:
         now = utcnow()
-        stmt = select(models.PlatformTask).where(
+        candidate = select(models.PlatformTask.id).where(
             models.PlatformTask.status == TaskStatus.PENDING.value,
             or_(models.PlatformTask.scheduled_for.is_(None), models.PlatformTask.scheduled_for <= now),
         )
         if platform:
-            stmt = stmt.where(models.PlatformTask.platform == platform)
-        stmt = stmt.order_by(models.PlatformTask.created_at.asc()).limit(1)
-        task = self.session.scalar(stmt)
-        if not task:
+            candidate = candidate.where(models.PlatformTask.platform == platform)
+        candidate = candidate.order_by(models.PlatformTask.created_at.asc()).limit(1).scalar_subquery()
+        task_id = self.session.scalar(
+            update(models.PlatformTask)
+            .where(
+                models.PlatformTask.id == candidate,
+                models.PlatformTask.status == TaskStatus.PENDING.value,
+            )
+            .values(
+                status=TaskStatus.CLAIMED.value,
+                claimed_by=worker_id,
+                heartbeat_at=now,
+                attempt_count=models.PlatformTask.attempt_count + 1,
+                updated_at=now,
+            )
+            .returning(models.PlatformTask.id)
+        )
+        if not task_id:
             return None
-        self.set_task_status(task, TaskStatus.CLAIMED, {"worker_id": worker_id})
-        task.claimed_by = worker_id
-        task.heartbeat_at = utcnow()
-        task.attempt_count += 1
-        self.session.flush()
+        task = self.session.get(models.PlatformTask, task_id)
+        if task is None:
+            return None
+        self.audit(
+            "task.status_changed",
+            {"from": TaskStatus.PENDING.value, "to": TaskStatus.CLAIMED.value, "worker_id": worker_id},
+            job_id=task.job_id,
+            platform_task_id=task.id,
+        )
         return task
+
+    def schedule_task_retry(
+        self,
+        task: models.PlatformTask,
+        result: PlatformResult,
+        *,
+        scheduled_for: datetime,
+    ) -> None:
+        task.result = result.model_dump(mode="json")
+        self.set_task_status(task, TaskStatus.FAILED)
+        self.set_task_status(task, TaskStatus.RETRYING)
+        self.set_task_status(task, TaskStatus.PENDING)
+        task.scheduled_for = scheduled_for
+        task.completed_at = None
+        task.claimed_by = None
+        task.heartbeat_at = None
 
     def set_task_status(
         self,

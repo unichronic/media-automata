@@ -13,6 +13,7 @@ from media_automata.platforms.browser_use_worker import BrowserUsePlatformWorker
 from media_automata.platforms.instagram_native import InstagramNativeWorker
 from media_automata.platforms.playwright_helpers import (
     body_text,
+    chromium_launch_kwargs,
     click_first,
     fill_textbox,
     first_visible,
@@ -311,7 +312,10 @@ class InstagramWorker(BrowserUsePlatformWorker):
             create_clicked = await click_any(
                 page,
                 [
-                    ("new-post-anchor", lambda: page.locator('[aria-label="New post"]').locator('xpath=ancestor::a[1]')),
+                    (
+                        "new-post-anchor",
+                        lambda: page.locator('[aria-label="New post"]').locator('xpath=ancestor::a[1]'),
+                    ),
                     ("create-href", lambda: page.locator('a[href="/create/select/"]')),
                     ("create-any-href", lambda: page.locator('a[href*="/create"]')),
                     ("create-text", lambda: page.get_by_text("Create", exact=True).locator('xpath=ancestor::a[1]')),
@@ -330,7 +334,12 @@ class InstagramWorker(BrowserUsePlatformWorker):
                 await click_any(
                     page,
                     [
-                        ("post-submenu-anchor", lambda: page.locator('span:has-text("Post"):visible').locator('xpath=ancestor::a[1]')),
+                        (
+                            "post-submenu-anchor",
+                            lambda: page.locator('span:has-text("Post"):visible').locator(
+                                'xpath=ancestor::a[1]'
+                            ),
+                        ),
                         (
                             "post-submenu-clickable",
                             lambda: page.locator('span:has-text("Post"):visible').locator(
@@ -370,6 +379,14 @@ class InstagramWorker(BrowserUsePlatformWorker):
 
         async def next_steps(page) -> None:
             for _ in range(2):
+                await click_any(
+                    page,
+                    [
+                        ("video-posts-reels-ok", lambda: page.get_by_role("button", name="OK", exact=True)),
+                        ("video-posts-reels-ok-text", lambda: page.get_by_text("OK", exact=True)),
+                    ],
+                    timeout=1500,
+                )
                 clicked = await click_any(
                     page,
                     [
@@ -381,6 +398,14 @@ class InstagramWorker(BrowserUsePlatformWorker):
                 if not clicked:
                     return
                 await page.wait_for_timeout(3000)
+            await click_any(
+                page,
+                [
+                    ("video-posts-reels-ok", lambda: page.get_by_role("button", name="OK", exact=True)),
+                    ("video-posts-reels-ok-text", lambda: page.get_by_text("OK", exact=True)),
+                ],
+                timeout=1500,
+            )
 
         async def fill_caption(page) -> bool:
             for locator in (
@@ -423,6 +448,7 @@ class InstagramWorker(BrowserUsePlatformWorker):
                 headless=context.settings.browser_headless,
                 viewport={"width": 1400, "height": 1000},
                 args=persistent_browser_args(),
+                **chromium_launch_kwargs(),
             )
             page = browser.pages[0] if browser.pages else await browser.new_page()
             try:
@@ -755,6 +781,7 @@ class InstagramWorker(BrowserUsePlatformWorker):
                 is_mobile=True,
                 has_touch=True,
                 args=persistent_browser_args(window_size="390,844"),
+                **chromium_launch_kwargs(),
             )
             page = browser.pages[0] if browser.pages else await browser.new_page()
             try:

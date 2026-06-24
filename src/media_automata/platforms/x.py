@@ -2,7 +2,14 @@ from __future__ import annotations
 
 from media_automata.platforms.base import WorkerContext
 from media_automata.platforms.browser_use_worker import BrowserUsePlatformWorker, content_text, media_paths
-from media_automata.platforms.playwright_helpers import body_text, click_first, fill_textbox, first_visible, screenshot
+from media_automata.platforms.playwright_helpers import (
+    body_text,
+    chromium_launch_kwargs,
+    click_first,
+    fill_textbox,
+    first_visible,
+    screenshot,
+)
 from media_automata.platforms.profile import persistent_browser_args, prepare_persistent_profile
 from media_automata.schemas import ErrorCode, PlatformResult, PlatformTaskPayload
 
@@ -185,6 +192,7 @@ class XWorker(BrowserUsePlatformWorker):
                 headless=context.settings.browser_headless,
                 viewport={"width": 1400, "height": 1000},
                 args=persistent_browser_args(),
+                **chromium_launch_kwargs(),
             )
             page = browser.pages[0] if browser.pages else await browser.new_page()
             try:

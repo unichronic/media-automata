@@ -84,7 +84,6 @@ class CommandOrchestrator:
             return CommandOutcome(handled=True, message=text)
 
         user = self.repo.get_or_create_user_for_whatsapp(message.from_number, chat_id=message.chat_id)
-        asset_ids = await self._store_message_media(message)
         job = self.repo.create_job(
             requested_by_user_id=user.id,
             whatsapp_message_id=message.message_id,
@@ -95,6 +94,14 @@ class CommandOrchestrator:
         if job.status != JobStatus.RECEIVED.value:
             detail = self.repo.get_job_detail(job.id)
             text = f"Job {job.id} already exists with status {detail.job.status if detail else job.status}."
+            await self._send_text_safely(message.chat_id, text)
+            return CommandOutcome(handled=True, job_id=job.id, message=text)
+
+        try:
+            asset_ids = await self._store_message_media(message)
+        except Exception as exc:
+            self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "media_processing_failed"})
+            text = f"Job {job.id} failed: WhatsApp media could not be processed ({type(exc).__name__})."
             await self._send_text_safely(message.chat_id, text)
             return CommandOutcome(handled=True, job_id=job.id, message=text)
 
@@ -280,7 +287,7 @@ class CommandOrchestrator:
 
     async def _media_attachment_bytes(self, attachment: MediaAttachment) -> bytes | None:
         if attachment.data_base64:
-            return base64.b64decode(attachment.data_base64)
+            return base64.b64decode(attachment.data_base64, validate=True)
         if not attachment.url:
             return None
         async with httpx.AsyncClient(timeout=45, follow_redirects=True) as client:

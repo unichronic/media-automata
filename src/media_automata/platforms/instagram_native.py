@@ -1378,9 +1378,6 @@ class InstagramNativeWorker:
         self._exit_story_viewer_if_visible(device)
         self._capture(device, context, payload, "own-profile-opened", artifacts)
 
-    def _story_viewer_visible_text(self, text: str) -> bool:
-        return "say something" in text and ("highlight" in text or "mention" in text or "send" in text)
-
     def _exit_story_viewer_if_visible(self, device: Any) -> None:
         for _ in range(3):
             if not self._story_viewer_visible_text(self._hierarchy(device).lower()):
@@ -2532,7 +2529,7 @@ class InstagramNativeWorker:
 
     @staticmethod
     def _story_viewer_visible_text(text: str) -> bool:
-        return any(
+        native_viewer = any(
             marker in text
             for marker in (
                 "reel_viewer_root",
@@ -2543,6 +2540,10 @@ class InstagramNativeWorker:
                 "sponsored story",
             )
         )
+        web_style_viewer = "say something" in text and (
+            "highlight" in text or "mention" in text or "send" in text
+        )
+        return native_viewer or web_style_viewer
 
     def _push_media_to_device(self, settings: Settings, serial: str, media_path: str) -> str:
         source = Path(media_path)
