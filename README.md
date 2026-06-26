@@ -57,6 +57,21 @@ API entrypoint:
 uvicorn media_automata.api:app --host 0.0.0.0 --port 8080
 ```
 
+## Local Full Stack
+
+With OpenWA checked out at `/home/unichronic/OpenWA` and both projects configured:
+
+```bash
+./scripts/stack.sh start
+./scripts/stack.sh status
+./scripts/stack.sh logs worker
+./scripts/stack.sh stop
+```
+
+The script starts the persistent OpenWA API and dashboard, Media Automata API and worker,
+and an available local Android runtime. Override paths or ports with `OPENWA_DIR`,
+`MEDIA_AUTOMATA_PORT`, and `ANDROID_AVD_NAME`.
+
 ## WhatsApp Command Example
 
 ```text

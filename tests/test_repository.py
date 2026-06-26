@@ -201,6 +201,43 @@ def test_schedule_task_retry_defers_retryable_task() -> None:
         assert repo.claim_next_task("worker_2") is None
 
 
+def test_fail_interrupted_tasks_releases_profiles_and_fails_active_jobs() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        repo = Repository(session, Settings())
+        job = repo.create_job(requested_by_user_id=None, whatsapp_message_id=None, raw_command="/post hello")
+        payload = PlatformTaskPayload(
+            job_id=job.id,
+            platform=Platform.X,
+            account="main_brand",
+            mode=JobMode.PUBLISH,
+            content=PlatformContent(platform=Platform.X, text="hello"),
+        )
+        task = repo.create_platform_task(payload)
+        profile = repo.acquire_browser_profile_lock(Platform.X, "main_brand", "dead-worker")
+        repo.set_job_status(job, JobStatus.PARSED)
+        repo.set_job_status(job, JobStatus.PLANNED)
+        repo.set_job_status(job, JobStatus.QUEUED)
+        claimed = repo.claim_next_task("dead-worker")
+        assert claimed is not None
+        repo.set_task_status(claimed, TaskStatus.RUNNING)
+        repo.refresh_job_rollup(job.id)
+
+        assert repo.fail_interrupted_tasks() == 1
+
+        assert task.status == TaskStatus.FAILED.value
+        assert task.claimed_by is None
+        assert task.result is not None
+        assert task.result["raw"]["interrupted"] is True
+        assert profile.lock_status == "unlocked"
+        assert profile.locked_by is None
+        recovered_job = repo.get_job(job.id)
+        assert recovered_job is not None
+        assert recovered_job.status == JobStatus.FAILED.value
+
+
 def test_create_job_is_idempotent_under_concurrent_duplicate_delivery(tmp_path: Path) -> None:
     engine = create_engine(
         f"sqlite:///{tmp_path / 'webhooks.sqlite3'}",

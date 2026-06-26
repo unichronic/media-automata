@@ -1,0 +1,16 @@
+[Unit]
+Description=Media Automata ReDroid Android device
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=ANDROID_ADB_PATH=/home/unichronic/.android-sdk/platform-tools/adb
+Environment=ANDROID_ADB_ENDPOINT=127.0.0.1:5555
+Environment=REDROID_CONTAINER_NAME=media-automata-redroid
+ExecStart=/home/unichronic/media_automata/ops/redroid/start-redroid.sh
+TimeoutStartSec=180
+
+[Install]
+WantedBy=multi-user.target

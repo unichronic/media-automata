@@ -22,6 +22,10 @@ def main() -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("migrate", help="Create/update database tables.")
+    subparsers.add_parser(
+        "recover-interrupted",
+        help="Fail interrupted active tasks and release browser profile locks before a local restart.",
+    )
 
     worker_parser = subparsers.add_parser("worker", help="Run browser platform tasks.")
     worker_parser.add_argument("--loop", action="store_true", help="Run continuously.")
@@ -113,6 +117,11 @@ def main() -> None:
     if args.command == "migrate":
         init_db()
         print("Database schema is ready.")
+    elif args.command == "recover-interrupted":
+        init_db()
+        with session_scope() as session:
+            count = Repository(session, get_settings()).fail_interrupted_tasks()
+        print(f"Recovered {count} interrupted task(s).")
     elif args.command == "worker":
         init_db()
         if args.loop:

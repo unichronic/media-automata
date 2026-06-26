@@ -233,7 +233,7 @@ class BrowserTaskRunner:
             candidate_payload = PlatformTaskPayload.model_validate(candidate.task_payload)
             result = candidate.result or {}
             result_url = str(result.get("result_url") or "").strip()
-            if candidate_payload.content.mode == "feed" and result.get("status") == "success" and result_url:
+            if candidate_payload.content.mode in {"feed", "reel"} and result.get("status") == "success" and result_url:
                 content = payload.content.model_copy(
                     update={"extra": {**payload.content.extra, "instagram_post_url": result_url}}
                 )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,6 +15,7 @@ from media_automata.schemas import (
 )
 from media_automata.schemas import (
     BrowserRunStatus,
+    ErrorCode,
     JobDetail,
     JobMode,
     JobSnapshot,
@@ -422,6 +424,44 @@ class Repository:
                 self.set_job_status(job, JobStatus.QUEUED, {"retried_tasks": count})
         return count
 
+    def fail_interrupted_tasks(self) -> int:
+        active_statuses = {
+            TaskStatus.CLAIMED.value,
+            TaskStatus.RUNNING.value,
+            TaskStatus.VERIFYING.value,
+        }
+        tasks = list(
+            self.session.scalars(
+                select(models.PlatformTask).where(models.PlatformTask.status.in_(active_statuses))
+            )
+        )
+        affected_jobs: set[str] = set()
+        for task in tasks:
+            task.result = {
+                "platform": task.platform,
+                "status": "failed",
+                "message": "Task was interrupted by a local stack shutdown or restart.",
+                "artifact_ids": [],
+                "error_code": ErrorCode.INTERNAL_ERROR.value,
+                "raw": {"interrupted": True},
+            }
+            self.set_task_status(task, TaskStatus.FAILED, {"reason": "worker_interrupted"})
+            task.claimed_by = None
+            task.heartbeat_at = None
+            affected_jobs.add(task.job_id)
+
+        profiles = self.session.scalars(
+            select(models.BrowserProfile).where(models.BrowserProfile.lock_status == "locked")
+        ).all()
+        for profile in profiles:
+            profile.lock_status = "unlocked"
+            profile.locked_by = None
+            profile.lock_heartbeat_at = None
+
+        for job_id in affected_jobs:
+            self.refresh_job_rollup(job_id)
+        return len(tasks)
+
     def create_browser_run(self, task: models.PlatformTask, profile_id: str | None) -> models.BrowserRun:
         run = models.BrowserRun(platform_task_id=task.id, profile_id=profile_id, status=BrowserRunStatus.STARTED.value)
         self.session.add(run)
@@ -600,7 +640,7 @@ class Repository:
     def create_media_todo(
         self,
         title: str,
-        platforms: list[Platform | str],
+        platforms: Sequence[Platform | str],
         *,
         notes: str | None = None,
         job_id: str | None = None,

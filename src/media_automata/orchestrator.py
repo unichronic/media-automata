@@ -160,7 +160,11 @@ class CommandOrchestrator:
             scheduled_for = parse_scheduled_for(message.body, plan.intent.scheduled_for)
             if not scheduled_for:
                 self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "scheduled_for_not_parsed"})
-                return await self._reply(message, f"Job {job.id} failed: I could not parse the scheduled time.", job_id=job.id)
+                return await self._reply(
+                    message,
+                    f"Job {job.id} failed: I could not parse the scheduled time.",
+                    job_id=job.id,
+                )
             if not is_future_schedule(scheduled_for):
                 self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "scheduled_for_in_past"})
                 return await self._reply(message, f"Job {job.id} failed: scheduled time is in the past.", job_id=job.id)
@@ -180,7 +184,11 @@ class CommandOrchestrator:
             self.repo.create_platform_task(payload, scheduled_for=scheduled_for)
 
         self.repo.set_job_status(job, JobStatus.QUEUED)
-        return await self._reply(message, self._job_created_text(job.id, plan, scheduled_for=scheduled_for), job_id=job.id)
+        return await self._reply(
+            message,
+            self._job_created_text(job.id, plan, scheduled_for=scheduled_for),
+            job_id=job.id,
+        )
 
     async def _handle_status(self, message: IncomingWhatsAppMessage) -> CommandOutcome:
         job_ref = _extract_job_ref(message.body)

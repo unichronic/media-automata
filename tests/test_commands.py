@@ -15,7 +15,7 @@ from media_automata.orchestrator import (
     _todo_line,
 )
 from media_automata.repository import Repository
-from media_automata.schemas import JobMode, MediaTodoStatus, Platform
+from media_automata.schemas import MediaTodoStatus, Platform
 
 
 def test_parse_todo_add_defaults_to_all_platforms() -> None:

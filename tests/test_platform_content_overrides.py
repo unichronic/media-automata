@@ -2,6 +2,7 @@ from media_automata.agents.graph import (
     apply_platform_content_overrides,
     dedupe_platform_contents,
     extract_platform_content_overrides,
+    extract_verbatim_post_text,
     normalize_intent_from_raw_command,
 )
 from media_automata.schemas import CommandIntent, JobMode, Platform, PlatformContent
@@ -64,6 +65,46 @@ def test_apply_platform_content_overrides_preserves_instagram_destination_modes(
     assert updated[2].hashtags == []
     assert updated[3].text == "hello"
     assert updated[3].hashtags == []
+
+
+def test_plain_post_text_is_verbatim_for_requested_platforms() -> None:
+    command = "/post hello shit you to linkedin and x"
+    contents = [
+        PlatformContent(platform=Platform.X, text="generated x", hashtags=["tag"]),
+        PlatformContent(platform=Platform.LINKEDIN, text="generated linkedin", hashtags=["tag"]),
+    ]
+
+    assert extract_verbatim_post_text(command) == "hello shit you"
+
+    updated = apply_platform_content_overrides(contents, command)
+
+    assert updated[0].text == "hello shit you"
+    assert updated[0].hashtags == []
+    assert updated[1].text == "hello shit you"
+    assert updated[1].hashtags == []
+
+
+def test_explicit_generation_instruction_keeps_generated_content() -> None:
+    command = "/post write a post on browser automation in 50 words to linkedin and x"
+    contents = [
+        PlatformContent(platform=Platform.X, text="generated x"),
+        PlatformContent(platform=Platform.LINKEDIN, text="generated linkedin"),
+    ]
+
+    assert extract_verbatim_post_text(command) is None
+    assert apply_platform_content_overrides(contents, command) == contents
+
+
+def test_media_placeholder_clears_generated_caption_without_generation_instruction() -> None:
+    contents = [
+        PlatformContent(platform=Platform.INSTAGRAM, caption="generated caption", mode="feed"),
+        PlatformContent(platform=Platform.X, text="generated x"),
+    ]
+
+    updated = apply_platform_content_overrides(contents, "/post this on all 3 platforms")
+
+    assert updated[0].caption == ""
+    assert updated[1].text == ""
 
 
 def test_dedupe_platform_contents_removes_duplicate_single_destination_platforms() -> None:

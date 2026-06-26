@@ -66,6 +66,39 @@ STORY_ERROR_MARKERS = ("couldn't share", "could not share", "try again", "error"
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm"}
 
 
+def video_is_portrait(path: str) -> bool:
+    try:
+        import subprocess
+
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=width,height",
+                "-of",
+                "csv=p=0:s=x",
+                path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            return False
+        parts = result.stdout.strip().split("x")
+        if len(parts) != 2:
+            return False
+        width, height = int(parts[0]), int(parts[1])
+        return height > width
+    except Exception:
+        return False
+
+
 def classify_instagram_auth_state(
     text: str,
     url: str,
@@ -293,8 +326,15 @@ class InstagramWorker(BrowserUsePlatformWorker):
             return state
 
         async def upload_surface_ready(page) -> bool:
-            if await page.locator('input[type="file"]').count():
+            text = (await body_text(page)).lower()
+            if (
+                "select from computer" in text
+                or "select from device" in text
+                or "drag photos and videos" in text
+            ):
                 return True
+            if "/create" in page.url and "page isn't available" not in text:
+                return bool(await page.locator('input[type="file"]').count())
             return await has_visible_locator(
                 page,
                 [
@@ -315,6 +355,12 @@ class InstagramWorker(BrowserUsePlatformWorker):
                     (
                         "new-post-anchor",
                         lambda: page.locator('[aria-label="New post"]').locator('xpath=ancestor::a[1]'),
+                    ),
+                    (
+                        "new-post-button",
+                        lambda: page.locator('[aria-label="New post"], [aria-label="Create"]').locator(
+                            'xpath=ancestor::*[@role="button" or self::button or self::a][1]'
+                        ),
                     ),
                     ("create-href", lambda: page.locator('a[href="/create/select/"]')),
                     ("create-any-href", lambda: page.locator('a[href*="/create"]')),
@@ -347,10 +393,57 @@ class InstagramWorker(BrowserUsePlatformWorker):
                             ),
                         ),
                         ("select-from-computer", lambda: page.get_by_text("Select from computer", exact=True)),
+                        ("select-from-device", lambda: page.get_by_text("Select from device", exact=True)),
                     ],
                     timeout=1500,
                 )
             return await upload_surface_ready(page)
+
+        async def preserve_reel_upload_crop(page) -> None:
+            """Instagram defaults video uploads to a square crop; force 9:16 for vertical reels."""
+            for attempt in range(4):
+                page_text = (await body_text(page)).lower()
+                if "crop" not in page_text:
+                    return
+                opened = await click_any(
+                    page,
+                    [
+                        ("select-crop", lambda: page.locator('[aria-label="Select crop"]')),
+                        ("select-crop-svg", lambda: page.locator('svg[aria-label="Select crop"]')),
+                    ],
+                    timeout=2500,
+                )
+                if not opened:
+                    return
+                await page.wait_for_timeout(700)
+                if await click_any(
+                    page,
+                    [
+                        ("ratio-9-16-text", lambda: page.get_by_text("9:16", exact=True)),
+                        ("ratio-9-16-role", lambda: page.get_by_role("button", name="9:16")),
+                    ],
+                    timeout=2000,
+                ):
+                    await page.wait_for_timeout(500)
+                    return
+                if await click_any(
+                    page,
+                    [
+                        ("original-text", lambda: page.get_by_text("Original", exact=True)),
+                        ("original-role", lambda: page.get_by_role("button", name="Original")),
+                    ],
+                    timeout=2000,
+                ):
+                    await page.wait_for_timeout(500)
+                    return
+                if attempt == 0:
+                    await click_any(
+                        page,
+                        [("select-crop-toggle", lambda: page.locator('[aria-label="Select crop"]'))],
+                        timeout=1500,
+                    )
+                    await page.wait_for_timeout(500)
+                    return
 
         async def select_upload_file(page) -> bool:
             file_input = page.locator('input[type="file"]').first
@@ -496,6 +589,9 @@ class InstagramWorker(BrowserUsePlatformWorker):
                     )
                 await page.wait_for_timeout(9000 if is_reel else 4000)
                 await screenshot(page, "file-selected")
+                if is_reel and video_is_portrait(media[0]):
+                    await preserve_reel_upload_crop(page)
+                    await screenshot(page, "crop-adjusted")
 
                 await next_steps(page)
                 await screenshot(page, "caption-step")

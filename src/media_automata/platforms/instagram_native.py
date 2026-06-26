@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import mimetypes
 import queue
 import re
@@ -17,6 +16,11 @@ from typing import Any
 from urllib.parse import quote
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps, UnidentifiedImageError
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows local test/import support
+    fcntl = None  # type: ignore[assignment]
 
 from media_automata.config import Settings
 from media_automata.instagram_story_actions import (
@@ -38,6 +42,7 @@ ANDROID_RUNTIME = "android-native-uiautomator2"
 ANDROID_DISPLAY_SIZE = "720x1280"
 ANDROID_DISPLAY_DENSITY = "320"
 INSTAGRAM_APK_ROOT = Path("runtime/android-apks")
+_NATIVE_THREAD_LOCK = threading.Lock()
 LOGIN_MARKERS = (
     "log in",
     "login",
@@ -240,6 +245,9 @@ class InstagramNativeWorker:
         lock_path = context.settings.artifact_root.parent / "android-native.lock"
         lock_path.parent.mkdir(parents=True, exist_ok=True)
         with lock_path.open("w", encoding="utf-8") as lock_file:
+            if fcntl is None:
+                with _NATIVE_THREAD_LOCK:
+                    return func(*args)
             fcntl.flock(lock_file, fcntl.LOCK_EX)
             try:
                 return func(*args)
@@ -838,7 +846,7 @@ class InstagramNativeWorker:
             return PlatformResult(
                 platform=payload.platform,
                 status="success",
-                message="Instagram latest feed post was shared to Story through the native Android app.",
+                message="Instagram latest post or Reel was shared to Story through the native Android app.",
                 raw=self._raw(artifacts, serial=serial, auth_status=auth_status),
             )
         except AndroidRuntimeError as exc:
@@ -1829,8 +1837,20 @@ class InstagramNativeWorker:
         actions = self._story_editor_actions(payload)
         if not actions:
             return
+        if payload.content.extra.get("instagram_story_source") == "feed_post":
+            caption_text, actions = self._split_shared_story_caption_actions(actions)
+        else:
+            caption_text = ""
         self._dismiss_story_prompts(device)
         self._capture(device, context, payload, "story-editor-before-actions", artifacts)
+        if caption_text:
+            self._add_shared_story_caption(device, caption_text)
+            if not self._recover_to_story_composer(device):
+                raise AndroidRuntimeError(
+                    "Could not return to Instagram Story composer after adding caption.",
+                    ErrorCode.UNKNOWN_UI_STATE,
+                )
+            self._capture(device, context, payload, "story-caption-filled", artifacts)
         for index, action in enumerate(actions, start=1):
             action_type = str(action.get("type") or "").strip().lower()
             if action_type == "resize":
@@ -1866,6 +1886,11 @@ class InstagramNativeWorker:
             elif action_type == "music":
                 self._add_story_music(device, str(action.get("query") or ""))
             self._dismiss_story_prompts(device)
+            if not self._recover_to_story_composer(device):
+                raise AndroidRuntimeError(
+                    f"Could not return to Instagram Story composer after {action_type or 'unknown'} action.",
+                    ErrorCode.UNKNOWN_UI_STATE,
+                )
             action_name = self._safe_action_name(action_type)
             self._capture(device, context, payload, f"story-action-{index}-{action_name}", artifacts)
 
@@ -1874,6 +1899,25 @@ class InstagramNativeWorker:
         if not isinstance(raw_actions, list):
             return []
         return self._ordered_story_editor_actions([action for action in raw_actions if isinstance(action, dict)])
+
+    @staticmethod
+    def _split_shared_story_caption_actions(actions: list[dict[str, Any]]) -> tuple[str, list[dict[str, Any]]]:
+        caption_lines: list[str] = []
+        remaining: list[dict[str, Any]] = []
+        for action in actions:
+            action_type = str(action.get("type") or "").strip().lower()
+            if action_type == "text":
+                value = str(action.get("text") or "").strip()
+                if value:
+                    caption_lines.append(value)
+                continue
+            if action_type == "mention":
+                username = str(action.get("username") or "").strip().lstrip("@")
+                if username:
+                    caption_lines.append(f"@{username}")
+                continue
+            remaining.append(action)
+        return "\n".join(caption_lines), remaining
 
     def _pre_render_direct_story_text_overlays(
         self,
@@ -2068,6 +2112,50 @@ class InstagramNativeWorker:
         device.click(width // 2, int(height * 0.44))
         self._wait(1)
 
+    def _add_shared_story_caption(self, device: Any, text: str) -> None:
+        clean_text = text.strip()
+        if not clean_text:
+            return
+        width, height = self._display_size(device)
+        clicked = (
+            self._click_any_text(device, ["Add a caption"], timeout=2)
+            or self._click_any_description(device, ["Add a caption"], timeout=2)
+        )
+        if not clicked:
+            device.click(int(width * 0.22), int(height * 0.84))
+            self._wait(1)
+        try:
+            self._send_keys(device, clean_text)
+        except AndroidRuntimeError:
+            if not self._try_set_edit_text(device, 0, clean_text):
+                raise
+        self._wait(1)
+
+    def _recover_to_story_composer(self, device: Any) -> bool:
+        width, height = self._display_size(device)
+        for _ in range(4):
+            text = self._hierarchy(device).lower()
+            if self._discard_prompt_visible_text(text):
+                return False
+            if self._story_composer_visible_text(text) and not self._story_text_editor_visible(device):
+                return True
+            if self._story_text_editor_visible(device):
+                self._hide_soft_keyboard(device)
+                self._wait(0.5)
+                if self._click_done(device, timeout=1.5):
+                    continue
+                device.click(int(width * 0.91), int(height * 0.04))
+                self._wait(0.8)
+                continue
+            self._hide_soft_keyboard(device)
+            self._tap(device, int(width * 0.08), int(height * 0.50))
+            self._wait(0.5)
+            text = self._hierarchy(device).lower()
+            if self._story_composer_visible_text(text):
+                return True
+        final_text = self._hierarchy(device).lower()
+        return self._story_composer_visible_text(final_text) and not self._story_text_editor_visible(device)
+
     def _add_story_text(
         self,
         device: Any,
@@ -2094,6 +2182,20 @@ class InstagramNativeWorker:
         if self._story_text_editor_visible(device):
             device.click(int(width * 0.91), int(height * 0.04))
         self._confirm_story_text_done(device, settings, serial)
+        if self._story_text_editor_visible(device):
+            self._hide_soft_keyboard(device)
+            self._wait(0.5)
+            if not self._click_done(device, timeout=2):
+                self._click_any_text(device, ["Done"], timeout=2)
+        if self._story_text_editor_visible(device):
+            device.press("back")
+            self._wait(1)
+            self._click_done(device, timeout=2)
+        if self._story_text_editor_visible(device):
+            raise AndroidRuntimeError(
+                "Could not close Instagram Story text editor after adding text.",
+                ErrorCode.UNKNOWN_UI_STATE,
+            )
         self._wait(1)
         if not self._story_text_editor_visible(device):
             self._move_story_object(device, position)

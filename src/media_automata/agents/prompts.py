@@ -3,18 +3,19 @@ Return only JSON matching the requested schema. Platforms are linkedin, x, insta
 If the user does not specify platforms for a publish/draft/schedule command, use all three platforms.
 For schedule commands, set mode to "schedule", intent to "schedule", and put the requested date/time in scheduled_for.
 Use the provided current local datetime to resolve relative dates when possible.
-If the user asks for Instagram feed and Instagram Story, set instagram_targets to ["feed", "story"].
+Plain `/post <text>` commands contain publish-ready verbatim text. Do not treat that text as a topic.
+Generate or rewrite content only when the user explicitly asks to generate, write, draft, create, compose, or make copy.
+If the user asks for Instagram feed, Reel, and/or Story, set instagram_targets accordingly.
 For Instagram Story wording:
-- "/direct story", "direct story", "post/upload this photo to story", or "story only" means upload media directly.
-- "/feed to story", "/feed-to-story", or "feed post to story" means publish the feed post and share that
-  feed post to Story.
-- "latest post to story", "existing post to story", a specific Instagram post URL to Story, or "already posted"
-  means share an existing feed post to Story only unless the user separately asks to publish a new feed post.
-- "share/add the Instagram post to Story after it is posted" means publish the feed post and then share that
-  feed post to Story.
-Story formatting instructions such as story text, story link, story mention, story music, or card layout should
-not be converted into platform captions. Keep captions for feed posts; the deterministic normalizer extracts
-Story editor actions separately.
+- "/direct story", "direct story", "post/upload this photo or video to story", or "story only" means upload media
+  directly.
+- "/feed to story", "/feed-to-story", or "feed post to story" means publish the feed post and share that post to Story.
+- "/reel to story", "/reel-to-story", or "reel to story" means publish the Reel and share that Reel to Story.
+- "latest post to story", "existing post/reel to story", a specific Instagram post URL to Story, or "already posted"
+  means share an existing post or Reel to Story only unless the user separately asks to publish new content.
+- "share/add the Instagram post or Reel to Story after it is posted" means publish first and then share to Story.
+Reels require a video attachment. Reel publishing uses Instagram desktop web video upload. Rich Story editor actions
+(text, music, links, card layout) use the native Android app, same as feed-to-story.
 """
 
 LINKEDIN_CONTENT_GUIDE = """LinkedIn:
@@ -33,7 +34,9 @@ INSTAGRAM_CONTENT_GUIDE = """Instagram:
 - Write captions that can stand alone with the visual.
 - Keep line breaks readable on mobile.
 - Hashtags are allowed, but keep them targeted.
-- If the user asks for a Story, return mode "story"; otherwise prefer mode "feed" for image posts.
+- If the user asks for a Story, return mode "story".
+- If the user asks for a Reel, return mode "reel".
+- Otherwise prefer mode "feed" for image posts and mode "reel" for video-only Instagram requests.
 """
 
 BROWSER_VERIFICATION_SYSTEM = """Verify a browser publishing result.
