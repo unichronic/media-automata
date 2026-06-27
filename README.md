@@ -82,3 +82,13 @@ LinkedIn - launch post
 ```
 
 Scheduling, quoted WhatsApp media, text-only X/LinkedIn posts, Instagram feed posts, direct Stories, and feed-post-to-Story flows are handled by the worker path.
+
+## ReDroid host (native Instagram Story)
+
+Rich Instagram Story actions use ReDroid on a Linux host. After reboot, load the binder module and start the container automatically:
+
+```bash
+sudo bash ops/redroid/install-systemd.sh
+```
+
+See [ops/redroid/README.md](ops/redroid/README.md) for details.

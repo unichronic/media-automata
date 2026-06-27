@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
 from media_automata.config import Settings
 from media_automata.db import models, session_scope
@@ -17,6 +19,8 @@ from media_automata.retry import exponential_backoff_seconds, is_retryable_error
 from media_automata.schemas import BrowserRunStatus, ErrorCode, PlatformResult, PlatformTaskPayload, TaskStatus
 from media_automata.storage import LocalStorage
 from media_automata.whatsapp.client import build_whatsapp_client
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -147,7 +151,14 @@ class BrowserTaskRunner:
 
     async def run_loop(self, *, idle_sleep_seconds: float = 2.0) -> None:
         while True:
-            result = await self.run_once()
+            try:
+                result = await self.run_once()
+            except OperationalError as exc:
+                if _is_sqlite_locked(exc):
+                    logger.warning("worker_sqlite_locked_retry worker_id=%s", self.worker_id)
+                    await asyncio.sleep(idle_sleep_seconds)
+                    continue
+                raise
             if not result.claimed:
                 await asyncio.sleep(idle_sleep_seconds)
 
@@ -268,3 +279,7 @@ class BrowserTaskRunner:
             await whatsapp.send_text(chat_id, text)
         except Exception:
             return
+
+
+def _is_sqlite_locked(exc: OperationalError) -> bool:
+    return "database is locked" in str(exc).lower()

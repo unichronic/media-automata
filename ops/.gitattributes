@@ -1,0 +1,2 @@
+*.sh text eol=lf
+ops/redroid/* text eol=lf

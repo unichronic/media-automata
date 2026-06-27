@@ -29,6 +29,26 @@ Launch announcement copy here
 - Attach media or quote a photo with the command as the caption.
 - Bot replies with `job_<id>` — use that for `/status` and `/retry`.
 
+### Instagram Reels
+
+Reels need a **video** attachment.
+
+```text
+/post this as instagram reel
+Instagram caption - launch reel
+```
+
+```text
+/post this as instagram reel and /reel to story
+Instagram caption - launch reel
+story text: New reel is live
+story music: Glory
+```
+
+- Reel publishing uses Instagram **desktop web video upload** (Playwright).
+- Reel → Story shares the published Reel URL (same pattern as feed-to-story).
+- Story text, music, links, and card layout use the **native Android** app (ReDroid).
+
 ---
 
 ## `/status` — job progress
