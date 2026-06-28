@@ -16,6 +16,11 @@ STORY_ACTION_LINE_RE = re.compile(
 QUOTED_TEXT_RE = re.compile(r"\b(?:story\s+)?(?:text|caption)\s+[\"'“](?P<text>.+?)[\"'”]", re.IGNORECASE)
 MENTION_RE = re.compile(r"(?:story\s+mention|mention)\s+@?(?P<username>[a-zA-Z0-9_.]+)", re.IGNORECASE)
 MUSIC_RE = re.compile(r"(?:story\s+music|music|choose\s+music|add\s+music)\s*[-:]?\s*(?P<query>.+)", re.IGNORECASE)
+BARE_MUSIC_RE = re.compile(
+    r"^\s*(?:add|choose)\s+(?:music|song|audio)(?:\s+(?:to|on)\s+(?:the\s+)?story)?\s*$"
+    r"|^\s*(?:music|song|audio)\s+(?:to|on)\s+(?:the\s+)?story\s*$",
+    re.IGNORECASE,
+)
 SUGGESTED_MUSIC_RE = re.compile(
     r"\b(?:story\s+)?(?:music|song|audio)\b.*\b(?:suggested|recommended|first suggestion|first suggested)\b"
     r"|\b(?:suggested|recommended|first suggestion|first suggested)\b.*\b(?:music|song|audio)\b",
@@ -63,7 +68,7 @@ def instagram_story_actions_from_raw_command(raw_command: str, *, source: str) -
             }
         )
 
-    music_value = line_values.get("music") or _music_query(raw_command) or _suggested_music_query(raw_command)
+    music_value = line_values.get("music") or _music_query(raw_command) or _bare_music_query(raw_command) or _suggested_music_query(raw_command)
     if music_value:
         if _is_suggested_music_value(music_value):
             actions.append({"type": "music", "query": "suggested", "section": "suggested"})
@@ -135,6 +140,13 @@ def _music_query(raw_command: str) -> str | None:
         query = match.group("query").strip(" -:")
         if query and not query.lower().startswith(("story", "to ", "on ")):
             return query
+    return None
+
+
+def _bare_music_query(raw_command: str) -> str | None:
+    for line in raw_command.splitlines():
+        if BARE_MUSIC_RE.match(line.strip()):
+            return "suggested"
     return None
 
 

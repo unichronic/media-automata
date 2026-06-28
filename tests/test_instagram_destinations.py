@@ -194,6 +194,30 @@ def test_story_music_can_use_first_suggested_song() -> None:
     assert {"type": "music", "query": "suggested", "section": "suggested"} in actions
 
 
+def test_bare_add_music_defaults_to_suggested() -> None:
+    command = """/post to all 3 platforms 21 53 jun 26
+Instagram caption - gg
+post to story
+story text: New post
+center the story text
+add music"""
+    actions = instagram_story_actions_from_raw_command(command, source="media")
+
+    assert {"type": "music", "query": "suggested", "section": "suggested"} in actions
+
+
+def test_add_music_to_story_defaults_to_suggested() -> None:
+    command = """/post to instagram at june 26 22:38
+caption - hello test
+/feed to story
+story text: New post
+left align the story text
+add music to story"""
+    actions = instagram_story_actions_from_raw_command(command, source="feed_post")
+
+    assert {"type": "music", "query": "suggested", "section": "suggested"} in actions
+
+
 def test_native_story_actions_run_layout_before_stickers_and_text() -> None:
     actions = [
         {"type": "text", "text": "after"},
