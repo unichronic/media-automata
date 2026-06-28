@@ -10,6 +10,7 @@ from fastapi.responses import FileResponse
 
 from media_automata.agents import SocialAgentGraph, build_llm_provider
 from media_automata.config import get_settings
+from media_automata.logging_config import configure_logging
 from media_automata.db import init_db, session_scope
 from media_automata.monitoring import check_openwa_session, run_production_check
 from media_automata.orchestrator import CommandOrchestrator
@@ -27,6 +28,7 @@ from media_automata.worker import BrowserTaskRunner
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    configure_logging()
     init_db()
     yield
 

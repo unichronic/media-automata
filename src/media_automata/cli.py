@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 
 from media_automata.config import get_settings
+from media_automata.logging_config import configure_logging
 from media_automata.db import init_db, session_scope
 from media_automata.monitoring import check_openwa_session, run_production_check
 from media_automata.platforms.base import WorkerContext
@@ -123,6 +124,7 @@ def main() -> None:
             count = Repository(session, get_settings()).fail_interrupted_tasks()
         print(f"Recovered {count} interrupted task(s).")
     elif args.command == "worker":
+        configure_logging()
         init_db()
         if args.loop:
             asyncio.run(BrowserTaskRunner(get_settings()).run_loop())

@@ -15,6 +15,7 @@ from media_automata.db import models, session_scope
 from media_automata.db.models import Asset
 from media_automata.platforms import build_platform_worker
 from media_automata.repository import Repository
+from media_automata.public_refs import format_public_ref
 from media_automata.retry import exponential_backoff_seconds, is_retryable_error
 from media_automata.schemas import BrowserRunStatus, ErrorCode, PlatformResult, PlatformTaskPayload, TaskStatus
 from media_automata.storage import LocalStorage
@@ -50,6 +51,14 @@ class BrowserTaskRunner:
             payload = PlatformTaskPayload.model_validate(task.task_payload)
             payload = self._hydrate_payload_from_job_results(repo, payload)
             task.task_payload = payload.model_dump(mode="json")
+            job_ref = format_public_ref(task.job_id)
+            logger.info(
+                "queue claimed job=%s platform=%s account=%s mode=%s",
+                job_ref,
+                payload.platform.value,
+                payload.account,
+                payload.content.mode,
+            )
             profile = None
             browser_run = None
             heartbeat_task: asyncio.Task[None] | None = None
@@ -63,10 +72,6 @@ class BrowserTaskRunner:
                 chat_id = repo.get_job_chat_id(task.job_id)
                 asset_lookup = self._asset_lookup(repo, payload.content.media_asset_ids)
                 session.commit()
-                if chat_id:
-                    await self._send_text_safely(
-                        chat_id, f"{payload.platform.value} started for account {payload.account}."
-                    )
 
                 worker = build_platform_worker(payload.platform, self.settings)
                 context = self._worker_context(profile.profile_path)
@@ -125,18 +130,34 @@ class BrowserTaskRunner:
                 repo.release_browser_profile_lock(profile, self.worker_id)
             repo.refresh_job_rollup(task.job_id)
             chat_id = repo.get_job_chat_id(task.job_id)
+            if result.status == "success":
+                logger.info(
+                    "completed job=%s platform=%s account=%s message=%s",
+                    job_ref,
+                    payload.platform.value,
+                    payload.account,
+                    result.message,
+                )
+            else:
+                logger.error(
+                    "failed job=%s platform=%s account=%s message=%s",
+                    job_ref,
+                    payload.platform.value,
+                    payload.account,
+                    result.message,
+                )
             if chat_id:
                 status = "completed" if result.status == "success" else "failed"
                 await self._send_text_safely(
                     chat_id,
-                    f"{payload.platform.value} {status} for account {payload.account}: {result.message}",
+                    f"{payload.platform.value} {status}: {result.message}",
                 )
             if self._needs_manual_login_alert(result):
                 if chat_id:
                     await self._send_manual_login_alert(chat_id, payload, result)
             job = repo.get_job(task.job_id)
             if chat_id and job and job.status in {"completed", "failed"}:
-                await self._send_text_safely(chat_id, f"Job {job.id} {job.status}.")
+                await self._send_text_safely(chat_id, f"Job {job_ref} {job.status}.")
             return WorkerRunResult(
                 claimed=True,
                 task_id=task.id,
@@ -155,7 +176,7 @@ class BrowserTaskRunner:
                 result = await self.run_once()
             except OperationalError as exc:
                 if _is_sqlite_locked(exc):
-                    logger.warning("worker_sqlite_locked_retry worker_id=%s", self.worker_id)
+                    logger.warning("queue sqlite locked; retrying")
                     await asyncio.sleep(idle_sleep_seconds)
                     continue
                 raise

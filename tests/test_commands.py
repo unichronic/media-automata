@@ -31,15 +31,16 @@ def test_parse_todo_add_reads_trailing_platforms() -> None:
 
 
 def test_extract_refs_and_normalize() -> None:
-    assert _extract_todo_ref("/todo check todo_abc123 linkedin") == "todo_abc123"
+    assert _extract_todo_ref("/todo done #abc123 linkedin") == "abc123"
+    assert _extract_todo_ref("/todo check todo_abc123 linkedin") == "abc123"
     assert _normalize_todo_ref("abc123") == "todo_abc123"
-    assert _extract_job_ref("/status job_abc123def456") == "job_abc123def456"
+    assert _extract_job_ref("/status #abc123def456") == "abc123def456"
     assert _extract_job_ref("/retry abc123 x") == "abc123"
     assert _normalize_job_ref("abc123") == "job_abc123"
 
 
 def test_extract_platform_and_account_key() -> None:
-    assert _extract_platform("/todo check todo_abc twitter") == "x"
+    assert _extract_platform("/todo done #abc twitter") == "x"
     assert _parse_account_key("/accounts") == "main_brand"
     assert _parse_account_key("/accounts alt_brand") == "alt_brand"
 

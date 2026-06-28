@@ -132,7 +132,7 @@ class MistralLLMProvider(LLMProvider):
                     continue
                 response.raise_for_status()
                 elapsed_ms = int((time.monotonic() - started) * 1000)
-                logger.info(
+                logger.debug(
                     "mistral_chat_completed purpose=%s model=%s attempt=%s key_slot=%s elapsed_ms=%s",
                     self.purpose,
                     self.model,
@@ -158,7 +158,7 @@ class MistralLLMProvider(LLMProvider):
         self.usage.prompt_tokens += prompt_tokens
         self.usage.completion_tokens += completion_tokens
         self.usage.total_tokens += total_tokens
-        logger.info(
+        logger.debug(
             "mistral_usage model=%s prompt_tokens=%s completion_tokens=%s total_tokens=%s",
             self.model,
             prompt_tokens,

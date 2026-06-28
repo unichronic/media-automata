@@ -25,6 +25,7 @@ from media_automata.schemas import (
     PlatformContent,
     PlatformTaskPayload,
 )
+from media_automata.public_refs import extract_public_ref, format_public_ref, normalize_prefixed_ref
 from media_automata.storage import LocalStorage
 from media_automata.whatsapp.client import WhatsAppClient
 
@@ -39,11 +40,11 @@ MEDIA_REFERENCE_PATTERNS = (
 HELP_TEXT = """Commands (see cheatsheet.md for full examples):
 
 /post <instructions> — queue a publish job
-/status job_<id> — job progress
-/retry job_<id> [platform] — retry failed tasks
+/status #<job-ref> — job progress
+/retry #<job-ref> [platform] — retry failed tasks
 /todo add <title> [linkedin x instagram]
 /todo list [pending|completed|all]
-/todo check todo_<id> <platform>
+/todo done #<todo-ref> <platform>
 /accounts [account_key] — profile health"""
 
 
@@ -112,7 +113,11 @@ class CommandOrchestrator:
         if job.status != JobStatus.RECEIVED.value:
             detail = self.repo.get_job_detail(job.id)
             status = detail.job.status if detail else job.status
-            return await self._reply(message, f"Job {job.id} already exists with status {status}.", job_id=job.id)
+            return await self._reply(
+                message,
+                f"Job {format_public_ref(job.id)} already exists with status {status}.",
+                job_id=job.id,
+            )
 
         try:
             try:
@@ -120,7 +125,10 @@ class CommandOrchestrator:
             except Exception as exc:
                 self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "media_processing_failed"})
                 self._commit_progress()
-                text = f"Job {job.id} failed: WhatsApp media could not be processed ({type(exc).__name__})."
+                text = (
+                    f"Job {format_public_ref(job.id)} failed: "
+                    f"WhatsApp media could not be processed ({type(exc).__name__})."
+                )
                 await self._send_text_safely(message.chat_id, text)
                 return CommandOutcome(handled=True, job_id=job.id, message=text)
             self._commit_progress()
@@ -132,7 +140,9 @@ class CommandOrchestrator:
                 self.repo.set_job_status(job, JobStatus.FAILED, {"reason": f"Unsupported intent: {plan.intent.intent}"})
                 self._commit_progress()
                 return await self._reply(
-                    message, f"Job {job.id} failed: unsupported intent {plan.intent.intent}.", job_id=job.id
+                    message,
+                    f"Job {format_public_ref(job.id)} failed: unsupported intent {plan.intent.intent}.",
+                    job_id=job.id,
                 )
 
             if plan.intent.missing_fields:
@@ -140,7 +150,8 @@ class CommandOrchestrator:
                 self._commit_progress()
                 return await self._reply(
                     message,
-                    f"Job {job.id} needs more information: {', '.join(plan.intent.missing_fields)}.",
+                    f"Job {format_public_ref(job.id)} needs more information: "
+                    f"{', '.join(plan.intent.missing_fields)}.",
                     job_id=job.id,
                 )
 
@@ -153,7 +164,7 @@ class CommandOrchestrator:
                     self._commit_progress()
                     return await self._reply(
                         message,
-                        f"Job {job.id} failed: I could not read the quoted or attached media from WhatsApp. "
+                        f"Job {format_public_ref(job.id)} failed: I could not read the quoted or attached media "
                         "Send the image again with the command as its caption, or retry after the gateway reconnects.",
                         job_id=job.id,
                     )
@@ -170,14 +181,16 @@ class CommandOrchestrator:
                     self._commit_progress()
                     return await self._reply(
                         message,
-                        f"Job {job.id} failed: I could not parse the scheduled time.",
+                        f"Job {format_public_ref(job.id)} failed: I could not parse the scheduled time.",
                         job_id=job.id,
                     )
                 if not is_future_schedule(scheduled_for):
                     self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "scheduled_for_in_past"})
                     self._commit_progress()
                     return await self._reply(
-                        message, f"Job {job.id} failed: scheduled time is in the past.", job_id=job.id
+                        message,
+                        f"Job {format_public_ref(job.id)} failed: scheduled time is in the past.",
+                        job_id=job.id,
                     )
                 self.repo.set_job_scheduled_for(job, scheduled_for)
 
@@ -210,20 +223,20 @@ class CommandOrchestrator:
             self._commit_progress()
             return await self._reply(
                 message,
-                f"Job {job.id} failed: {type(exc).__name__}.",
+                f"Job {format_public_ref(job.id)} failed: {type(exc).__name__}.",
                 job_id=job.id,
             )
 
     async def _handle_status(self, message: IncomingWhatsAppMessage) -> CommandOutcome:
         job_ref = _extract_job_ref(message.body)
         if not job_ref:
-            return await self._reply(message, "Send `/status job_<id>`.")
+            return await self._reply(message, "Send `/status #<job-ref>`.")
         job = self.repo.resolve_job(_normalize_job_ref(job_ref))
         if not job:
             return await self._reply(message, f"Job {job_ref} was not found.")
         detail = self.repo.get_job_detail(job.id)
         assert detail is not None
-        lines = [f"Job {detail.job.id}: {detail.job.status.value}"]
+        lines = [f"Job {format_public_ref(detail.job.id)}: {detail.job.status.value}"]
         for task in detail.tasks:
             lines.append(f"- {task.platform.value}: {task.status.value}")
         return await self._reply(message, "\n".join(lines), job_id=job.id)
@@ -231,16 +244,16 @@ class CommandOrchestrator:
     async def _handle_retry(self, message: IncomingWhatsAppMessage) -> CommandOutcome:
         job_ref = _extract_job_ref(message.body)
         if not job_ref:
-            return await self._reply(message, "Send `/retry job_<id>` or `/retry job_<id> linkedin`.")
+            return await self._reply(message, "Send `/retry #<job-ref>` or `/retry #<job-ref> linkedin`.")
         job = self.repo.resolve_job(_normalize_job_ref(job_ref))
         if not job:
             return await self._reply(message, f"Job {job_ref} was not found.")
         retried = self.repo.retry_failed_tasks(job.id, _extract_platform(message.body))
         if retried:
             self.repo.set_job_status(job, JobStatus.QUEUED)
-            text = f"Queued {retried} failed task(s) for retry on job {job.id}."
+            text = f"Queued {retried} failed task(s) for retry on job {format_public_ref(job.id)}."
         else:
-            text = f"No failed tasks to retry on job {job.id}."
+            text = f"No failed tasks to retry on job {format_public_ref(job.id)}."
         return await self._reply(message, text, job_id=job.id)
 
     async def _handle_accounts(self, message: IncomingWhatsAppMessage) -> CommandOutcome:
@@ -279,7 +292,7 @@ class CommandOrchestrator:
                 return await self._reply(message, "Send `/todo add <title>` or `/todo add <title> linkedin x`.")
             todo = self.repo.create_media_todo(title, platforms)
             platform_list = ", ".join(todo.platforms)
-            return await self._reply(message, f"Todo {todo.id} added: {todo.title}\nPlatforms: {platform_list}")
+            return await self._reply(message, f"Todo {format_public_ref(todo.id)} added: {todo.title}\nPlatforms: {platform_list}")
         if subcommand == "list":
             status_filter = tokens[2].lower() if len(tokens) > 2 else "pending"
             if status_filter not in {"pending", "completed", "all"}:
@@ -290,11 +303,11 @@ class CommandOrchestrator:
                 return await self._reply(message, f"No {status_filter} todos.")
             lines = ["Todos:"] + [_todo_line(todo) for todo in todos]
             return await self._reply(message, "\n".join(lines))
-        if subcommand == "check":
+        if subcommand in {"done", "check"}:
             todo_ref = _extract_todo_ref(message.body)
             platform = _extract_platform(message.body)
             if not todo_ref or not platform:
-                return await self._reply(message, "Send `/todo check todo_<id> linkedin`.")
+                return await self._reply(message, "Send `/todo done #<todo-ref> linkedin`.")
             try:
                 todo = self.repo.check_media_todo_platform(_normalize_todo_ref(todo_ref), platform)
             except ValueError as exc:
@@ -389,10 +402,11 @@ class CommandOrchestrator:
 
     @staticmethod
     def _job_created_text(job_id: str, plan: AgentPlan, *, scheduled_for=None) -> str:
+        job_ref = format_public_ref(job_id)
         if scheduled_for:
-            lines = [f"Job {job_id} scheduled for {scheduled_for.isoformat()}.", "", "Platforms:"]
+            lines = [f"Job {job_ref} scheduled for {scheduled_for.isoformat()}.", "", "Platforms:"]
         else:
-            lines = [f"Job {job_id} queued.", "", "Platforms:"]
+            lines = [f"Job {job_ref} queued.", "", "Platforms:"]
         for content in plan.platform_contents:
             destination = ""
             if content.platform.value == "instagram" and content.mode in {"feed", "story", "reel"}:
@@ -428,35 +442,19 @@ def _platform_from_token(token: str) -> Platform | None:
 
 
 def _normalize_job_ref(job_ref: str) -> str:
-    if job_ref.lower().startswith("job_"):
-        return job_ref.lower()
-    return f"job_{job_ref.lower()}"
+    return normalize_prefixed_ref(job_ref, "job")
 
 
 def _normalize_todo_ref(todo_ref: str) -> str:
-    if todo_ref.lower().startswith("todo_"):
-        return todo_ref.lower()
-    return f"todo_{todo_ref.lower()}"
+    return normalize_prefixed_ref(todo_ref, "todo")
 
 
 def _extract_job_ref(text: str) -> str | None:
-    match = re.search(r"\bjob_[a-f0-9]+\b", text, flags=re.IGNORECASE)
-    if match:
-        return match.group(0).lower()
-    tokens = text.strip().split()
-    if len(tokens) >= 2 and tokens[0].lower() in {"/status", "/retry"}:
-        return tokens[1]
-    return None
+    return extract_public_ref(text, prefix="job")
 
 
 def _extract_todo_ref(text: str) -> str | None:
-    match = re.search(r"\btodo_[a-f0-9]+\b", text, flags=re.IGNORECASE)
-    if match:
-        return match.group(0).lower()
-    tokens = text.strip().split()
-    if len(tokens) >= 3 and tokens[0].lower() == "/todo" and tokens[1].lower() == "check":
-        return tokens[2]
-    return None
+    return extract_public_ref(text, prefix="todo")
 
 
 def _parse_account_key(text: str) -> str:
@@ -491,17 +489,17 @@ def _todo_line(todo: models.MediaTodo) -> str:
     completed = set(todo.completed_platforms or [])
     bits = [f"{p}:{'done' if p in completed else 'pending'}" for p in todo.platforms]
     suffix = " [DONE]" if todo.status == MediaTodoStatus.COMPLETED.value else ""
-    return f"{todo.id} {todo.title}{suffix} ({', '.join(bits)})"
+    return f"{format_public_ref(todo.id)} {todo.title}{suffix} ({', '.join(bits)})"
 
 
 def _todo_detail(todo: models.MediaTodo) -> str:
     completed = set(todo.completed_platforms or [])
-    lines = [f"Todo {todo.id}: {todo.title}"]
+    lines = [f"Todo {format_public_ref(todo.id)}: {todo.title}"]
     for platform in todo.platforms:
         lines.append(f"- {platform}: {'done' if platform in completed else 'pending'}")
     lines.append(f"Status: {todo.status}")
     if todo.job_id:
-        lines.append(f"Job: {todo.job_id}")
+        lines.append(f"Job: {format_public_ref(todo.job_id)}")
     return "\n".join(lines)
 
 
