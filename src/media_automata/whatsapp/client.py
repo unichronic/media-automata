@@ -205,16 +205,11 @@ def _iter_sessions(payload: Any) -> list[dict[str, Any]]:
 
 
 def _media_attachment_from_message(message: dict[str, Any]) -> MediaAttachment | None:
+    from media_automata.whatsapp.normalizer import _media_attachment_from_container
+
     metadata_value = message.get("metadata")
     metadata: dict[str, Any] = metadata_value if isinstance(metadata_value, dict) else {}
-    media = message.get("media") if isinstance(message.get("media"), dict) else None
-    if media is None and isinstance(metadata.get("media"), dict):
-        media = metadata["media"]
-    if not isinstance(media, dict):
-        return None
-    return MediaAttachment(
-        mimetype=str(media.get("mimetype") or media.get("mimeType") or "application/octet-stream"),
-        filename=media.get("filename"),
-        data_base64=media.get("data") or media.get("base64"),
-        url=media.get("url"),
-    )
+    attachment = _media_attachment_from_container(message)
+    if attachment is None and metadata:
+        attachment = _media_attachment_from_container(metadata)
+    return attachment

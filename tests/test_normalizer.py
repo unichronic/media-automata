@@ -67,3 +67,31 @@ def test_normalize_quoted_media_payload() -> None:
     assert message.quoted_media is not None
     assert message.quoted_media.mimetype == "image/jpeg"
     assert message.quoted_media.filename == "older.jpg"
+
+
+def test_normalize_quoted_document_video_payload() -> None:
+    message = normalize_openwa_payload(
+        {
+            "event": "message.received",
+            "data": {
+                "id": "cmd-doc-1",
+                "from": "+911234567890",
+                "chatId": "+911234567890@c.us",
+                "body": "/post this as instagram reel",
+                "quotedMessage": {
+                    "id": "video-doc-1",
+                    "body": "",
+                    "document": {
+                        "mimetype": "video/mp4",
+                        "filename": "launch.mp4",
+                        "data": "AA==",
+                    },
+                },
+            },
+        }
+    )
+
+    assert message.quoted_message_id == "video-doc-1"
+    assert message.quoted_media is not None
+    assert message.quoted_media.mimetype == "video/mp4"
+    assert message.quoted_media.filename == "launch.mp4"

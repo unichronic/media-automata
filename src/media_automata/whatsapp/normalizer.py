@@ -22,13 +22,11 @@ def normalize_openwa_payload(payload: dict[str, Any]) -> IncomingWhatsAppMessage
     """
     raw_data = payload.get("data")
     data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else payload
-    raw_media = data.get("media")
-    media_data: dict[str, Any] | None = raw_media if isinstance(raw_media, dict) else None
     raw_quoted = data.get("quotedMessage") or data.get("quoted_message") or {}
     quoted: dict[str, Any] = raw_quoted if isinstance(raw_quoted, dict) else {}
 
-    media = _media_attachment(media_data)
-    quoted_media = _media_attachment(quoted.get("media"))
+    media = _media_attachment_from_container(data)
+    quoted_media = _media_attachment_from_container(quoted)
 
     message_id = _first(data.get("id"), data.get("messageId"), data.get("message_id"), payload.get("id"))
     from_number = _first(data.get("from"), data.get("fromNumber"), data.get("sender"), data.get("chatId"), "unknown")
@@ -48,6 +46,14 @@ def normalize_openwa_payload(payload: dict[str, Any]) -> IncomingWhatsAppMessage
         quoted_media=quoted_media,
         raw=payload,
     )
+
+
+def _media_attachment_from_container(container: dict[str, Any]) -> MediaAttachment | None:
+    for key in ("media", "document", "documentMessage", "file", "video", "videoMessage", "image", "imageMessage"):
+        attachment = _media_attachment(container.get(key))
+        if attachment is not None:
+            return attachment
+    return None
 
 
 def _media_attachment(value: Any) -> MediaAttachment | None:
