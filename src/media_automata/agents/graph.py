@@ -123,7 +123,7 @@ class SocialAgentGraph:
 
     async def run(self, raw_command: str, *, media_asset_ids: list[str] | None = None) -> AgentPlan:
         intent = await self.parse_command(raw_command)
-        intent.media_asset_ids = media_asset_ids or []
+        intent = attach_command_media_assets(intent, media_asset_ids or [])
         strategy = await self.create_strategy(intent)
         platform_contents = await self.create_platform_content(intent, strategy, raw_command=raw_command)
         return AgentPlan(intent=intent, strategy=strategy, platform_contents=platform_contents)
@@ -182,6 +182,17 @@ def attach_intent_media_assets(content: PlatformContent, media_asset_ids: list[s
     if content.media_asset_ids or not media_asset_ids:
         return content
     return content.model_copy(update={"media_asset_ids": media_asset_ids})
+
+
+def attach_command_media_assets(intent: CommandIntent, media_asset_ids: list[str]) -> CommandIntent:
+    updates: dict[str, object] = {"media_asset_ids": media_asset_ids}
+    if media_asset_ids and intent.missing_fields:
+        updates["missing_fields"] = [
+            field
+            for field in intent.missing_fields
+            if field not in {"media", "media_asset_ids", "attachment", "attachments"}
+        ]
+    return intent.model_copy(update=updates)
 
 
 def normalize_intent_from_raw_command(intent: CommandIntent, raw_command: str) -> CommandIntent:

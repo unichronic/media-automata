@@ -1,6 +1,6 @@
 from typing import cast
 
-from media_automata.agents.graph import expand_instagram_destinations, instagram_story_sources
+from media_automata.agents.graph import attach_command_media_assets, expand_instagram_destinations, instagram_story_sources
 from media_automata.platforms.instagram import VIDEO_EXTENSIONS
 from media_automata.platforms.instagram_native import InstagramNativeWorker
 from media_automata.repository import Repository
@@ -11,6 +11,19 @@ from media_automata.worker import BrowserTaskRunner
 def test_video_extensions_include_common_whatsapp_formats() -> None:
     assert ".mp4" in VIDEO_EXTENSIONS
     assert ".mov" in VIDEO_EXTENSIONS
+
+
+def test_attached_command_media_clears_missing_media_field() -> None:
+    intent = CommandIntent(
+        intent="publish",
+        platforms=[Platform.INSTAGRAM],
+        missing_fields=["media_asset_ids", "caption"],
+    )
+
+    updated = attach_command_media_assets(intent, ["asset_1"])
+
+    assert updated.media_asset_ids == ["asset_1"]
+    assert updated.missing_fields == ["caption"]
 
 
 def test_reel_to_story_creates_reel_and_story_tasks() -> None:
