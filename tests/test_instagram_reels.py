@@ -34,7 +34,7 @@ def test_reel_story_source_detection() -> None:
     assert instagram_story_sources("/post share the reel to story after posting") == ["feed_post"]
 
 
-def test_shared_story_caption_actions_are_split_from_editor_actions() -> None:
+def test_shared_story_text_actions_remain_editor_overlays() -> None:
     caption, remaining = InstagramNativeWorker._split_shared_story_caption_actions(
         [
             {"type": "text", "text": "New reel is live"},
@@ -49,6 +49,23 @@ def test_shared_story_caption_actions_are_split_from_editor_actions() -> None:
         {"type": "music", "query": "suggested"},
         {"type": "link", "url": "https://example.com"},
     ]
+
+
+def test_feed_post_story_text_stays_in_editor_actions() -> None:
+    from media_automata.instagram_story_actions import instagram_story_actions_from_raw_command
+
+    actions = instagram_story_actions_from_raw_command(
+        """/post to instagram at june 26 23:05
+insta caption - hello test
+/feed to story
+story text: New post
+left align the story text
+add music to story""",
+        source="feed_post",
+    )
+
+    assert {"type": "text", "text": "New post", "position": "left"} in actions
+    assert {"type": "music", "query": "suggested", "section": "suggested"} in actions
 
 
 def test_worker_hydrates_story_from_completed_reel() -> None:

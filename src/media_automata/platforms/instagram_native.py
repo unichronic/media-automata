@@ -1837,10 +1837,7 @@ class InstagramNativeWorker:
         actions = self._story_editor_actions(payload)
         if not actions:
             return
-        if payload.content.extra.get("instagram_story_source") == "feed_post":
-            caption_text, actions = self._split_shared_story_caption_actions(actions)
-        else:
-            caption_text = ""
+        caption_text = ""
         self._dismiss_story_prompts(device)
         self._capture(device, context, payload, "story-editor-before-actions", artifacts)
         if caption_text:
