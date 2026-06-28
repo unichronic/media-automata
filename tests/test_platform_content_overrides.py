@@ -111,6 +111,22 @@ story text: New post"""
     assert updated[1].caption == "hello test"
 
 
+def test_inline_with_caption_applies_to_all_platforms() -> None:
+    command = '/post this on all 3 platforms with caption = "congratss!"'
+    contents = [
+        PlatformContent(platform=Platform.INSTAGRAM, caption="wrong", mode="feed"),
+        PlatformContent(platform=Platform.X, text="wrong"),
+        PlatformContent(platform=Platform.LINKEDIN, text="wrong"),
+    ]
+
+    assert extract_verbatim_post_text(command) == ""
+    updated = apply_platform_content_overrides(contents, command)
+
+    assert updated[0].caption == "congratss!"
+    assert updated[1].text == "congratss!"
+    assert updated[2].text == "congratss!"
+
+
 def test_media_placeholder_clears_generated_caption_without_generation_instruction() -> None:
     contents = [
         PlatformContent(platform=Platform.INSTAGRAM, caption="generated caption", mode="feed"),

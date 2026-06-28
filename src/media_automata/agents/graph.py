@@ -32,6 +32,10 @@ GENERIC_CAPTION_LINE_RE = re.compile(
     r"^\s*(?P<label>caption|text|post)\s*[-:]\s*(?P<text>.+?)\s*$",
     re.IGNORECASE,
 )
+INLINE_CAPTION_RE = re.compile(
+    r"\bwith\s+caption\s*=\s*(?P<quote>[\"'])(?P<text>.+?)(?P=quote)",
+    re.IGNORECASE,
+)
 ROUTE_AND_SCHEDULE_BODY_RE = re.compile(
     r"^(?:to|on|for)\s+(?:(?:linkedin|linked\s*in|twitter|x|insta|instagram|ig)"
     r"(?:\s*(?:,|and|&|\+)\s*)?)+\s*"
@@ -355,6 +359,15 @@ def extract_generic_caption(raw_command: str) -> str | None:
     return None
 
 
+def extract_inline_global_caption(raw_command: str) -> str | None:
+    first_line = raw_command.strip().splitlines()[0] if raw_command.strip() else ""
+    match = INLINE_CAPTION_RE.search(first_line)
+    if not match:
+        return None
+    text = match.group("text").strip()
+    return text or None
+
+
 def single_platform_from_contents(contents: list[PlatformContent]) -> Platform | None:
     platforms = {content.platform for content in contents}
     if len(platforms) != 1:
@@ -370,6 +383,7 @@ def extract_verbatim_post_text(raw_command: str) -> str | None:
     body = match.group("body").strip()
     if not body or CONTENT_GENERATION_RE.search(body):
         return None
+    body = INLINE_CAPTION_RE.sub("", body).strip()
     body = re.sub(r"^this\s+text\s+", "", body, flags=re.IGNORECASE).strip()
     body = PLATFORM_DESTINATION_SUFFIX_RE.sub("", body).strip()
     body = body.strip("\"' ")
@@ -384,7 +398,10 @@ def apply_platform_content_overrides(
 ) -> list[PlatformContent]:
     overrides = extract_platform_content_overrides(raw_command)
     generic_caption = extract_generic_caption(raw_command)
-    if generic_caption and not overrides:
+    inline_caption = extract_inline_global_caption(raw_command)
+    if inline_caption and not overrides:
+        overrides = {content.platform: inline_caption for content in contents}
+    elif generic_caption and not overrides:
         single_platform = single_platform_from_contents(contents)
         if single_platform is not None:
             overrides = {single_platform: generic_caption}
