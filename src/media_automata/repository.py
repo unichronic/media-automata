@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
+import time
 from typing import Any
 
 from sqlalchemy import func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from media_automata.config import Settings
@@ -36,6 +37,7 @@ PRE_TASK_JOB_STATUSES = {
     JobStatus.PARSED.value,
     JobStatus.PLANNED.value,
 }
+SQLITE_LOCK_RETRY_ATTEMPTS = 5
 
 
 def utcnow() -> datetime:
@@ -323,6 +325,17 @@ class Repository:
         return task
 
     def claim_next_task(self, worker_id: str, platform: str | None = None) -> models.PlatformTask | None:
+        for attempt in range(SQLITE_LOCK_RETRY_ATTEMPTS):
+            try:
+                return self._claim_next_task_once(worker_id, platform)
+            except OperationalError as exc:
+                if "database is locked" not in str(exc).lower() or attempt == SQLITE_LOCK_RETRY_ATTEMPTS - 1:
+                    raise
+                self.session.rollback()
+                time.sleep(0.05 * (2**attempt))
+        return None
+
+    def _claim_next_task_once(self, worker_id: str, platform: str | None = None) -> models.PlatformTask | None:
         now = utcnow()
         candidate = select(models.PlatformTask.id).where(
             models.PlatformTask.status == TaskStatus.PENDING.value,
