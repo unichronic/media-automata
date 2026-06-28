@@ -58,6 +58,22 @@ ISO_LIKE_RE = re.compile(
     r"(?:\s*(?P<ampm>am|pm))?\b",
     re.IGNORECASE,
 )
+_MONTH = (
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|"
+    r"sep(?:t|tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+)
+AT_MONTH_DAY_TIME_RE = re.compile(
+    rf"\b(?:at|for)\s+(?P<month>{_MONTH})\s+"
+    r"(?P<day>\d{1,2})(?:,?\s+(?P<year>\d{4}))?"
+    r"\s+(?P<hour>\d{1,2})(?::(?P<minute>\d{2}))?\s*(?P<ampm>am|pm)?\b",
+    re.IGNORECASE,
+)
+AT_TIME_MONTH_DAY_RE = re.compile(
+    rf"\b(?:at|for)\s+(?P<hour>\d{{1,2}}):(?P<minute>\d{{2}})\s+"
+    rf"(?P<month>{_MONTH})\s+"
+    r"(?P<day>\d{1,2})(?:,?\s+(?P<year>\d{4}))?\b",
+    re.IGNORECASE,
+)
 
 
 def parse_scheduled_for(
@@ -118,29 +134,45 @@ def _extract_iso_candidate(value: str) -> str | None:
 
 
 def _parse_known_phrases(value: str, reference: datetime, tz: ZoneInfo) -> datetime | None:
-    for regex in (RELATIVE_DAY_RE, MONTH_FIRST_RE, DAY_FIRST_RE, ISO_LIKE_RE):
+    for regex in (
+        AT_TIME_MONTH_DAY_RE,
+        AT_MONTH_DAY_TIME_RE,
+        RELATIVE_DAY_RE,
+        MONTH_FIRST_RE,
+        DAY_FIRST_RE,
+        ISO_LIKE_RE,
+    ):
         match = regex.search(value)
         if not match:
             continue
-        parts = match.groupdict()
-        hour, minute = _parse_time(parts.get("hour"), parts.get("minute"), parts.get("ampm"))
-        if parts.get("day", "").lower() in {"today", "tomorrow"}:
-            base = reference.date()
-            if parts["day"].lower() == "tomorrow":
-                base += timedelta(days=1)
-            return datetime.combine(base, time(hour, minute), tz)
-
-        month_value = parts.get("month")
-        if not month_value or month_value.lower() not in MONTHS:
-            return _date_from_numbers(parts, reference, tz, hour, minute)
-        month = MONTHS[month_value.lower()]
-        day = int(parts["day"])
-        year = int(parts["year"]) if parts.get("year") else reference.year
-        parsed = datetime(year, month, day, hour, minute, tzinfo=tz)
-        if not parts.get("year") and (month, day) < (reference.month, reference.day):
-            parsed = parsed.replace(year=year + 1)
-        return parsed
+        parsed = _datetime_from_match(match.groupdict(), reference, tz)
+        if parsed is not None:
+            return parsed
     return None
+
+
+def _datetime_from_match(parts: dict[str, str | None], reference: datetime, tz: ZoneInfo) -> datetime | None:
+    hour, minute = _parse_time(parts.get("hour"), parts.get("minute"), parts.get("ampm"))
+    if not _valid_clock(hour, minute):
+        return None
+    if parts.get("day", "").lower() in {"today", "tomorrow"}:
+        base = reference.date()
+        if parts["day"].lower() == "tomorrow":
+            base += timedelta(days=1)
+        return _safe_datetime(base.year, base.month, base.day, hour, minute, tz)
+
+    month_value = parts.get("month")
+    if not month_value or month_value.lower() not in MONTHS:
+        return _date_from_numbers(parts, reference, tz, hour, minute)
+    month = MONTHS[month_value.lower()]
+    day = int(parts["day"])
+    year = int(parts["year"]) if parts.get("year") else reference.year
+    parsed = _safe_datetime(year, month, day, hour, minute, tz)
+    if parsed is None:
+        return None
+    if not parts.get("year") and (month, day) < (reference.month, reference.day):
+        parsed = parsed.replace(year=year + 1)
+    return parsed
 
 
 def _schedule_candidates(value: str) -> list[str]:
@@ -175,16 +207,28 @@ def _date_from_numbers(
     tz: ZoneInfo,
     hour: int,
     minute: int,
-) -> datetime:
-    parsed = datetime(
+) -> datetime | None:
+    return _safe_datetime(
         int(parts["year"] or reference.year),
         int(parts["month"] or reference.month),
         int(parts["day"] or reference.day),
         hour,
         minute,
-        tzinfo=tz,
+        tz,
     )
-    return parsed
+
+
+def _valid_clock(hour: int, minute: int) -> bool:
+    return 0 <= hour <= 23 and 0 <= minute <= 59
+
+
+def _safe_datetime(year: int, month: int, day: int, hour: int, minute: int, tz: ZoneInfo) -> datetime | None:
+    if not _valid_clock(hour, minute):
+        return None
+    try:
+        return datetime(year, month, day, hour, minute, tzinfo=tz)
+    except ValueError:
+        return None
 
 
 def _parse_time(hour_value: str | None, minute_value: str | None, ampm: str | None) -> tuple[int, int]:

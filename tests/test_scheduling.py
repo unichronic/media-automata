@@ -59,3 +59,19 @@ def test_same_day_past_time_does_not_roll_to_next_year() -> None:
     assert scheduled_for is not None
     assert scheduled_for == datetime(2026, 5, 20, 12, 15, tzinfo=UTC)
     assert not is_future_schedule(scheduled_for, now=now.astimezone(UTC))
+
+
+def test_invalid_hour_match_is_skipped_instead_of_raising() -> None:
+    now = datetime(2026, 6, 26, 22, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    scheduled_for = parse_scheduled_for("/post to instagram at 22:15 june 26", now=now)
+
+    assert scheduled_for == datetime(2026, 6, 26, 16, 45, tzinfo=UTC)
+
+
+def test_at_month_day_time_schedule() -> None:
+    now = datetime(2026, 6, 26, 21, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
+
+    scheduled_for = parse_scheduled_for("/post to instagram at june 26 22:38", now=now)
+
+    assert scheduled_for == datetime(2026, 6, 26, 17, 8, tzinfo=UTC)
