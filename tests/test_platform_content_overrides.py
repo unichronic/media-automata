@@ -95,6 +95,22 @@ def test_explicit_generation_instruction_keeps_generated_content() -> None:
     assert apply_platform_content_overrides(contents, command) == contents
 
 
+def test_generic_caption_applies_to_single_instagram_destination() -> None:
+    command = """/post to instagram at june 26 22:38
+caption - hello test
+/feed to story
+story text: New post"""
+    contents = [
+        PlatformContent(platform=Platform.INSTAGRAM, caption="to instagram at june 26 22:38", mode="feed"),
+        PlatformContent(platform=Platform.INSTAGRAM, caption="to instagram at june 26 22:38", mode="story"),
+    ]
+
+    updated = apply_platform_content_overrides(contents, command)
+
+    assert updated[0].caption == "hello test"
+    assert updated[1].caption == "hello test"
+
+
 def test_media_placeholder_clears_generated_caption_without_generation_instruction() -> None:
     contents = [
         PlatformContent(platform=Platform.INSTAGRAM, caption="generated caption", mode="feed"),

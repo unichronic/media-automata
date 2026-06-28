@@ -28,6 +28,16 @@ PLATFORM_CONTENT_LINE_RE = re.compile(
     r"(?P<text>.+?)\s*$",
     re.IGNORECASE,
 )
+GENERIC_CAPTION_LINE_RE = re.compile(
+    r"^\s*(?P<label>caption|text|post)\s*[-:]\s*(?P<text>.+?)\s*$",
+    re.IGNORECASE,
+)
+ROUTE_AND_SCHEDULE_BODY_RE = re.compile(
+    r"^(?:to|on|for)\s+(?:(?:linkedin|linked\s*in|twitter|x|insta|instagram|ig)"
+    r"(?:\s*(?:,|and|&|\+)\s*)?)+\s*"
+    r"(?:at|for|on|from)?\s*(?:\d|jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|today|tomorrow|schedule).*$",
+    re.IGNORECASE,
+)
 ALL_PLATFORMS_RE = re.compile(r"\ball\s+(?:3|three|platforms?|socials?)\b", re.IGNORECASE)
 SCHEDULE_HINT_RE = re.compile(r"\bschedule\b", re.IGNORECASE)
 CONTENT_GENERATION_RE = re.compile(
@@ -334,6 +344,24 @@ def extract_platform_content_overrides(raw_command: str) -> dict[Platform, str]:
     return overrides
 
 
+def extract_generic_caption(raw_command: str) -> str | None:
+    for line in raw_command.splitlines():
+        match = GENERIC_CAPTION_LINE_RE.match(line)
+        if not match:
+            continue
+        text = match.group("text").strip()
+        if text:
+            return text
+    return None
+
+
+def single_platform_from_contents(contents: list[PlatformContent]) -> Platform | None:
+    platforms = {content.platform for content in contents}
+    if len(platforms) != 1:
+        return None
+    return next(iter(platforms))
+
+
 def extract_verbatim_post_text(raw_command: str) -> str | None:
     first_line = raw_command.strip().splitlines()[0] if raw_command.strip() else ""
     match = re.match(r"^\s*/post\b(?P<body>.*)$", first_line, re.IGNORECASE | re.DOTALL)
@@ -345,7 +373,7 @@ def extract_verbatim_post_text(raw_command: str) -> str | None:
     body = re.sub(r"^this\s+text\s+", "", body, flags=re.IGNORECASE).strip()
     body = PLATFORM_DESTINATION_SUFFIX_RE.sub("", body).strip()
     body = body.strip("\"' ")
-    if not body or body.lower() in NON_CONTENT_PLACEHOLDERS:
+    if not body or body.lower() in NON_CONTENT_PLACEHOLDERS or ROUTE_AND_SCHEDULE_BODY_RE.match(body):
         return ""
     return body
 
@@ -355,6 +383,11 @@ def apply_platform_content_overrides(
     raw_command: str,
 ) -> list[PlatformContent]:
     overrides = extract_platform_content_overrides(raw_command)
+    generic_caption = extract_generic_caption(raw_command)
+    if generic_caption and not overrides:
+        single_platform = single_platform_from_contents(contents)
+        if single_platform is not None:
+            overrides = {single_platform: generic_caption}
     verbatim_text = extract_verbatim_post_text(raw_command)
     if not overrides and verbatim_text is None:
         return contents
