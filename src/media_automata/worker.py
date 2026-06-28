@@ -11,7 +11,6 @@ from sqlalchemy import select
 from media_automata.config import Settings
 from media_automata.db import models, session_scope
 from media_automata.db.models import Asset
-from media_automata.notifications import final_job_text, task_completed_text, task_started_text
 from media_automata.platforms import build_platform_worker
 from media_automata.repository import Repository
 from media_automata.retry import exponential_backoff_seconds, is_retryable_error
@@ -61,7 +60,9 @@ class BrowserTaskRunner:
                 asset_lookup = self._asset_lookup(repo, payload.content.media_asset_ids)
                 session.commit()
                 if chat_id:
-                    await self._send_text_safely(chat_id, task_started_text(payload))
+                    await self._send_text_safely(
+                        chat_id, f"{payload.platform.value} started for account {payload.account}."
+                    )
 
                 worker = build_platform_worker(payload.platform, self.settings)
                 context = self._worker_context(profile.profile_path)
@@ -121,13 +122,17 @@ class BrowserTaskRunner:
             repo.refresh_job_rollup(task.job_id)
             chat_id = repo.get_job_chat_id(task.job_id)
             if chat_id:
-                await self._send_text_safely(chat_id, task_completed_text(payload, result))
+                status = "completed" if result.status == "success" else "failed"
+                await self._send_text_safely(
+                    chat_id,
+                    f"{payload.platform.value} {status} for account {payload.account}: {result.message}",
+                )
             if self._needs_manual_login_alert(result):
                 if chat_id:
                     await self._send_manual_login_alert(chat_id, payload, result)
             job = repo.get_job(task.job_id)
             if chat_id and job and job.status in {"completed", "failed"}:
-                await self._send_text_safely(chat_id, final_job_text(job.id, job.status))
+                await self._send_text_safely(chat_id, f"Job {job.id} {job.status}.")
             return WorkerRunResult(
                 claimed=True,
                 task_id=task.id,

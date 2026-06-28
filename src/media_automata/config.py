@@ -14,7 +14,7 @@ ARTIFACT_ROOT = Path("runtime/artifacts")
 BROWSER_PROFILE_ROOT = Path("runtime/profiles")
 BROWSER_TIMEOUT_SECONDS = 180
 LLM_MODEL = "mistral-large-latest"
-COMMAND_PREFIXES = ("/social", "/post", "/status", "/retry", "/accounts")
+COMMAND_PREFIXES = ("/help", "/post", "/status", "/retry", "/accounts", "/todo")
 DEFAULT_ANDROID_ADB_ENDPOINT = "127.0.0.1:5555"
 
 

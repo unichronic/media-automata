@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from media_automata.agents.graph import SocialAgentGraph
 from media_automata.config import Settings
+from media_automata.db import models
 from media_automata.media import inspect_media, validate_media_size
 from media_automata.repository import Repository
 from media_automata.scheduling import is_future_schedule, parse_scheduled_for
@@ -19,6 +20,7 @@ from media_automata.schemas import (
     JobMode,
     JobStatus,
     MediaAttachment,
+    MediaTodoStatus,
     Platform,
     PlatformContent,
     PlatformTaskPayload,
@@ -33,6 +35,16 @@ MEDIA_REFERENCE_PATTERNS = (
     re.compile(r"\bthis\s+(?:photo|image|pic|picture|media|video)\b", re.IGNORECASE),
     re.compile(r"\b(?:quoted|replied|attached)\s+(?:photo|image|pic|picture|media|video)\b", re.IGNORECASE),
 )
+
+HELP_TEXT = """Commands (see cheatsheet.md for full examples):
+
+/post <instructions> — queue a publish job
+/status job_<id> — job progress
+/retry job_<id> [platform] — retry failed tasks
+/todo add <title> [linkedin x instagram]
+/todo list [pending|completed|all]
+/todo check todo_<id> <platform>
+/accounts [account_key] — profile health"""
 
 
 @dataclass
@@ -65,23 +77,28 @@ class CommandOrchestrator:
         if not self._is_command(message.body):
             return CommandOutcome(handled=False, message="Message does not match a command prefix.")
 
-        if message.body.lower().startswith("/status"):
+        body = message.body.strip()
+        lower = body.lower()
+        if lower.startswith("/help"):
+            return await self._reply(message, HELP_TEXT)
+        if lower.startswith("/status"):
             return await self._handle_status(message)
-        if message.body.lower().startswith("/retry"):
+        if lower.startswith("/retry"):
             return await self._handle_retry(message)
-        if message.body.lower().startswith("/accounts"):
+        if lower.startswith("/accounts"):
             return await self._handle_accounts(message)
+        if lower.startswith("/todo"):
+            return await self._handle_todo(message)
 
         if KILL_SWITCH_PATH.exists():
-            text = "Publishing is paused by the local kill switch."
-            await self._send_text_safely(message.chat_id, text)
-            return CommandOutcome(handled=True, message=text)
+            return await self._reply(message, "Publishing is paused by the local kill switch.")
 
         active_jobs = self.repo.count_active_jobs()
         if active_jobs >= MAX_CONCURRENT_JOBS:
-            text = f"System is busy with {active_jobs} active job(s). Try again after the current jobs finish."
-            await self._send_text_safely(message.chat_id, text)
-            return CommandOutcome(handled=True, message=text)
+            return await self._reply(
+                message,
+                f"System is busy with {active_jobs} active job(s). Try again after the current jobs finish.",
+            )
 
         user = self.repo.get_or_create_user_for_whatsapp(message.from_number, chat_id=message.chat_id)
         job = self.repo.create_job(
@@ -93,9 +110,8 @@ class CommandOrchestrator:
 
         if job.status != JobStatus.RECEIVED.value:
             detail = self.repo.get_job_detail(job.id)
-            text = f"Job {job.id} already exists with status {detail.job.status if detail else job.status}."
-            await self._send_text_safely(message.chat_id, text)
-            return CommandOutcome(handled=True, job_id=job.id, message=text)
+            status = detail.job.status if detail else job.status
+            return await self._reply(message, f"Job {job.id} already exists with status {status}.", job_id=job.id)
 
         try:
             asset_ids = await self._store_message_media(message)
@@ -110,15 +126,17 @@ class CommandOrchestrator:
 
         if plan.intent.intent not in {"publish", "draft", "schedule"}:
             self.repo.set_job_status(job, JobStatus.FAILED, {"reason": f"Unsupported intent: {plan.intent.intent}"})
-            text = f"Job {job.id} failed: unsupported intent {plan.intent.intent}."
-            await self._send_text_safely(message.chat_id, text)
-            return CommandOutcome(handled=True, job_id=job.id, message=text)
+            return await self._reply(
+                message, f"Job {job.id} failed: unsupported intent {plan.intent.intent}.", job_id=job.id
+            )
 
         if plan.intent.missing_fields:
             self.repo.set_job_status(job, JobStatus.FAILED, {"missing_fields": plan.intent.missing_fields})
-            text = f"Job {job.id} needs more information: {', '.join(plan.intent.missing_fields)}."
-            await self._send_text_safely(message.chat_id, text)
-            return CommandOutcome(handled=True, job_id=job.id, message=text)
+            return await self._reply(
+                message,
+                f"Job {job.id} needs more information: {', '.join(plan.intent.missing_fields)}.",
+                job_id=job.id,
+            )
 
         if not asset_ids and _expects_media_from_context(message.body):
             publishable_contents = [
@@ -126,12 +144,12 @@ class CommandOrchestrator:
             ]
             if not publishable_contents:
                 self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "expected_media_not_received"})
-                text = (
+                return await self._reply(
+                    message,
                     f"Job {job.id} failed: I could not read the quoted or attached media from WhatsApp. "
-                    "Send the image again with the command as its caption, or retry after the gateway reconnects."
+                    "Send the image again with the command as its caption, or retry after the gateway reconnects.",
+                    job_id=job.id,
                 )
-                await self._send_text_safely(message.chat_id, text)
-                return CommandOutcome(handled=True, job_id=job.id, message=text)
             if len(publishable_contents) != len(plan.platform_contents):
                 plan = plan.model_copy(update={"platform_contents": publishable_contents})
 
@@ -142,14 +160,10 @@ class CommandOrchestrator:
             scheduled_for = parse_scheduled_for(message.body, plan.intent.scheduled_for)
             if not scheduled_for:
                 self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "scheduled_for_not_parsed"})
-                text = f"Job {job.id} failed: I could not parse the scheduled time."
-                await self._send_text_safely(message.chat_id, text)
-                return CommandOutcome(handled=True, job_id=job.id, message=text)
+                return await self._reply(message, f"Job {job.id} failed: I could not parse the scheduled time.", job_id=job.id)
             if not is_future_schedule(scheduled_for):
                 self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "scheduled_for_in_past"})
-                text = f"Job {job.id} failed: scheduled time is in the past."
-                await self._send_text_safely(message.chat_id, text)
-                return CommandOutcome(handled=True, job_id=job.id, message=text)
+                return await self._reply(message, f"Job {job.id} failed: scheduled time is in the past.", job_id=job.id)
             self.repo.set_job_scheduled_for(job, scheduled_for)
 
         for content in plan.platform_contents:
@@ -166,44 +180,39 @@ class CommandOrchestrator:
             self.repo.create_platform_task(payload, scheduled_for=scheduled_for)
 
         self.repo.set_job_status(job, JobStatus.QUEUED)
-        text = self._job_created_text(job.id, plan, scheduled_for=scheduled_for)
-        await self._send_text_safely(message.chat_id, text)
-        return CommandOutcome(handled=True, job_id=job.id, message=text)
+        return await self._reply(message, self._job_created_text(job.id, plan, scheduled_for=scheduled_for), job_id=job.id)
 
     async def _handle_status(self, message: IncomingWhatsAppMessage) -> CommandOutcome:
-        job_id = _extract_job_id(message.body)
-        if not job_id:
-            text = "Send `/status job_<id>`."
-            await self._send_text_safely(message.chat_id, text)
-            return CommandOutcome(handled=True, message=text)
-        detail = self.repo.get_job_detail(job_id)
-        if not detail:
-            text = f"Job {job_id} was not found."
-        else:
-            lines = [f"Job {detail.job.id}: {detail.job.status}"]
-            for task in detail.tasks:
-                lines.append(f"- {task.platform}: {task.status}")
-            text = "\n".join(lines)
-        await self._send_text_safely(message.chat_id, text)
-        return CommandOutcome(handled=True, job_id=job_id, message=text)
+        job_ref = _extract_job_ref(message.body)
+        if not job_ref:
+            return await self._reply(message, "Send `/status job_<id>`.")
+        job = self.repo.resolve_job(_normalize_job_ref(job_ref))
+        if not job:
+            return await self._reply(message, f"Job {job_ref} was not found.")
+        detail = self.repo.get_job_detail(job.id)
+        assert detail is not None
+        lines = [f"Job {detail.job.id}: {detail.job.status.value}"]
+        for task in detail.tasks:
+            lines.append(f"- {task.platform.value}: {task.status.value}")
+        return await self._reply(message, "\n".join(lines), job_id=job.id)
 
     async def _handle_retry(self, message: IncomingWhatsAppMessage) -> CommandOutcome:
-        job_id = _extract_job_id(message.body)
-        platform = _extract_retry_platform(message.body)
-        if not job_id:
-            text = "Send `/retry job_<id>` or `/retry job_<id> x`."
-            await self._send_text_safely(message.chat_id, text)
-            return CommandOutcome(handled=True, message=text)
-        retried = self.repo.retry_failed_tasks(job_id, platform)
-        job = self.repo.get_job(job_id)
-        if job and retried:
+        job_ref = _extract_job_ref(message.body)
+        if not job_ref:
+            return await self._reply(message, "Send `/retry job_<id>` or `/retry job_<id> linkedin`.")
+        job = self.repo.resolve_job(_normalize_job_ref(job_ref))
+        if not job:
+            return await self._reply(message, f"Job {job_ref} was not found.")
+        retried = self.repo.retry_failed_tasks(job.id, _extract_platform(message.body))
+        if retried:
             self.repo.set_job_status(job, JobStatus.QUEUED)
-        text = f"Queued {retried} failed task(s) for retry on job {job_id}."
-        await self._send_text_safely(message.chat_id, text)
-        return CommandOutcome(handled=True, job_id=job_id, message=text)
+            text = f"Queued {retried} failed task(s) for retry on job {job.id}."
+        else:
+            text = f"No failed tasks to retry on job {job.id}."
+        return await self._reply(message, text, job_id=job.id)
 
     async def _handle_accounts(self, message: IncomingWhatsAppMessage) -> CommandOutcome:
-        account_key = _extract_account_key(message.body) or "main_brand"
+        account_key = _parse_account_key(message.body)
         platforms = ("linkedin", "x", "instagram")
         for platform in platforms:
             self.repo.ensure_browser_profile(platform, account_key)
@@ -227,10 +236,43 @@ class CommandOrchestrator:
                 f"credentials {credentials}; checked {checked_at}{native_status}"
             )
             lines.append(f"  path: {profile.profile_path}")
+        return await self._reply(message, "\n".join(lines))
 
-        text = "\n".join(lines)
+    async def _handle_todo(self, message: IncomingWhatsAppMessage) -> CommandOutcome:
+        tokens = message.body.strip().split()
+        subcommand = tokens[1].lower() if len(tokens) > 1 else None
+        if subcommand == "add":
+            title, platforms = _parse_todo_add(message.body)
+            if not title:
+                return await self._reply(message, "Send `/todo add <title>` or `/todo add <title> linkedin x`.")
+            todo = self.repo.create_media_todo(title, platforms)
+            platform_list = ", ".join(todo.platforms)
+            return await self._reply(message, f"Todo {todo.id} added: {todo.title}\nPlatforms: {platform_list}")
+        if subcommand == "list":
+            status_filter = tokens[2].lower() if len(tokens) > 2 else "pending"
+            if status_filter not in {"pending", "completed", "all"}:
+                status_filter = "pending"
+            status = None if status_filter == "all" else MediaTodoStatus(status_filter)
+            todos = self.repo.list_media_todos(status=status)
+            if not todos:
+                return await self._reply(message, f"No {status_filter} todos.")
+            lines = ["Todos:"] + [_todo_line(todo) for todo in todos]
+            return await self._reply(message, "\n".join(lines))
+        if subcommand == "check":
+            todo_ref = _extract_todo_ref(message.body)
+            platform = _extract_platform(message.body)
+            if not todo_ref or not platform:
+                return await self._reply(message, "Send `/todo check todo_<id> linkedin`.")
+            try:
+                todo = self.repo.check_media_todo_platform(_normalize_todo_ref(todo_ref), platform)
+            except ValueError as exc:
+                return await self._reply(message, str(exc))
+            return await self._reply(message, _todo_detail(todo))
+        return await self._reply(message, HELP_TEXT)
+
+    async def _reply(self, message: IncomingWhatsAppMessage, text: str, *, job_id: str | None = None) -> CommandOutcome:
         await self._send_text_safely(message.chat_id, text)
-        return CommandOutcome(handled=True, message=text)
+        return CommandOutcome(handled=True, job_id=job_id, message=text)
 
     async def _send_text_safely(self, chat_id: str, text: str) -> None:
         try:
@@ -328,19 +370,101 @@ class CommandOrchestrator:
         return "\n".join(lines)
 
 
-def _extract_job_id(text: str) -> str | None:
-    match = re.search(r"\bjob_[a-f0-9]+\b", text)
-    return match.group(0) if match else None
-
-
-def _extract_retry_platform(text: str) -> str | None:
+def _extract_platform(text: str) -> str | None:
     lower = text.lower()
     for platform in ("linkedin", "instagram"):
-        if platform in lower:
+        if re.search(rf"\b{platform}\b", lower):
             return platform
-    if re.search(r"\bx\b", lower) or "twitter" in lower:
+    if re.search(r"\bx\b", lower) or re.search(r"\btwitter\b", lower):
         return "x"
     return None
+
+
+def _platform_from_token(token: str) -> Platform | None:
+    normalized = token.lower()
+    if normalized in {"linkedin", "instagram"}:
+        return Platform(normalized)
+    if normalized in {"x", "twitter"}:
+        return Platform.X
+    return None
+
+
+def _normalize_job_ref(job_ref: str) -> str:
+    if job_ref.lower().startswith("job_"):
+        return job_ref.lower()
+    return f"job_{job_ref.lower()}"
+
+
+def _normalize_todo_ref(todo_ref: str) -> str:
+    if todo_ref.lower().startswith("todo_"):
+        return todo_ref.lower()
+    return f"todo_{todo_ref.lower()}"
+
+
+def _extract_job_ref(text: str) -> str | None:
+    match = re.search(r"\bjob_[a-f0-9]+\b", text, flags=re.IGNORECASE)
+    if match:
+        return match.group(0).lower()
+    tokens = text.strip().split()
+    if len(tokens) >= 2 and tokens[0].lower() in {"/status", "/retry"}:
+        return tokens[1]
+    return None
+
+
+def _extract_todo_ref(text: str) -> str | None:
+    match = re.search(r"\btodo_[a-f0-9]+\b", text, flags=re.IGNORECASE)
+    if match:
+        return match.group(0).lower()
+    tokens = text.strip().split()
+    if len(tokens) >= 3 and tokens[0].lower() == "/todo" and tokens[1].lower() == "check":
+        return tokens[2]
+    return None
+
+
+def _parse_account_key(text: str) -> str:
+    match = re.search(r"\baccount\s*[:=]\s*([a-zA-Z0-9_.-]+)", text, flags=re.IGNORECASE)
+    if match:
+        return match.group(1)
+    tokens = text.strip().split()
+    if len(tokens) >= 2 and tokens[0].lower() == "/accounts":
+        return tokens[1]
+    return "main_brand"
+
+
+def _parse_todo_add(text: str) -> tuple[str | None, list[Platform]]:
+    tokens = text.strip().split()
+    if len(tokens) < 3 or tokens[1].lower() != "add":
+        return None, []
+    title_tokens = tokens[2:]
+    platforms: list[Platform] = []
+    while title_tokens:
+        platform = _platform_from_token(title_tokens[-1])
+        if platform is None:
+            break
+        platforms.insert(0, platform)
+        title_tokens.pop()
+    if not platforms:
+        platforms = [Platform.LINKEDIN, Platform.X, Platform.INSTAGRAM]
+    title = " ".join(title_tokens).strip()
+    return (title, platforms) if title else (None, [])
+
+
+def _todo_line(todo: models.MediaTodo) -> str:
+    completed = set(todo.completed_platforms or [])
+    bits = [f"{p}:{'done' if p in completed else 'pending'}" for p in todo.platforms]
+    suffix = " [DONE]" if todo.status == MediaTodoStatus.COMPLETED.value else ""
+    return f"{todo.id} {todo.title}{suffix} ({', '.join(bits)})"
+
+
+def _todo_detail(todo: models.MediaTodo) -> str:
+    completed = set(todo.completed_platforms or [])
+    lines = [f"Todo {todo.id}: {todo.title}"]
+    for platform in todo.platforms:
+        lines.append(f"- {platform}: {'done' if platform in completed else 'pending'}")
+    lines.append(f"Status: {todo.status}")
+    if todo.job_id:
+        lines.append(f"Job: {todo.job_id}")
+    return "\n".join(lines)
 
 
 def _expects_media_from_context(text: str) -> bool:
@@ -353,14 +477,3 @@ def _content_requires_input_media(content: PlatformContent) -> bool:
     if content.mode == "story" and content.extra.get("instagram_story_source") == "feed_post":
         return False
     return content.mode in {"feed", "story", "reel"}
-
-
-def _extract_account_key(text: str) -> str | None:
-    match = re.search(r"\baccount\s*[:=]\s*([a-zA-Z0-9_.-]+)", text)
-    if match:
-        return match.group(1)
-    for token in text.strip().split()[1:]:
-        clean = token.strip()
-        if clean.lower() not in {"status", "profiles", "profile"}:
-            return clean
-    return None

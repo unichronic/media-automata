@@ -171,3 +171,16 @@ class AuditEvent(Base):
     event_type: Mapped[str] = mapped_column(String(128), index=True)
     event_payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now_utc, nullable=False)
+
+
+class MediaTodo(Base, TimestampMixin):
+    __tablename__ = "media_todos"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: new_id("todo"))
+    title: Mapped[str] = mapped_column(String(512))
+    notes: Mapped[str | None] = mapped_column(Text)
+    platforms: Mapped[list[str]] = mapped_column(JSON)
+    completed_platforms: Mapped[list[str]] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    job_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

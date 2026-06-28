@@ -9,7 +9,7 @@ def test_normalize_openwa_payload() -> None:
                 "id": "abc",
                 "from": "+911234567890",
                 "chatId": "+911234567890@c.us",
-                "body": "/social publish",
+                "body": "/post publish",
                 "timestamp": 10,
                 "media": {"mimetype": "image/png", "filename": "a.png", "data": "AA=="},
             },

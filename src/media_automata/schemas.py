@@ -94,7 +94,7 @@ class Asset(BaseModel):
 
 
 class CommandIntent(BaseModel):
-    intent: Literal["publish", "schedule", "draft", "status", "retry", "accounts", "unknown"] = "unknown"
+    intent: Literal["publish", "schedule", "draft", "unknown"] = "unknown"
     mode: JobMode = JobMode.PUBLISH
     platforms: list[Platform] = Field(default_factory=list)
     account: str = "main_brand"
@@ -214,3 +214,8 @@ class PlatformTaskSnapshot(BaseModel):
 class JobDetail(BaseModel):
     job: JobSnapshot
     tasks: list[PlatformTaskSnapshot]
+
+
+class MediaTodoStatus(StrEnum):
+    PENDING = "pending"
+    COMPLETED = "completed"

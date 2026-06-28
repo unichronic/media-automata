@@ -25,7 +25,7 @@ def test_fixed_project_defaults_ignore_old_env_knobs(monkeypatch) -> None:
     settings = Settings()
 
     assert settings.llm_model == "mistral-large-latest"
-    assert settings.prefixes == ("/social", "/post", "/status", "/retry", "/accounts")
+    assert settings.prefixes == ("/help", "/post", "/status", "/retry", "/accounts", "/todo")
     assert settings.browser_timeout_seconds == 180
 
 

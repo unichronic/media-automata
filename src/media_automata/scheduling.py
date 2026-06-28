@@ -158,7 +158,7 @@ def _schedule_candidates(value: str) -> list[str]:
     command_lines = [
         line
         for line in lines
-        if any(keyword in line.lower() for keyword in ("schedule", "/post", "/social", "/publish", "tomorrow", "today"))
+        if any(keyword in line.lower() for keyword in ("schedule", "/post", "/publish", "tomorrow", "today"))
     ]
 
     for line in command_lines:

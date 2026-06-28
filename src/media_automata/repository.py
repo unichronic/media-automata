@@ -18,6 +18,7 @@ from media_automata.schemas import (
     JobMode,
     JobSnapshot,
     JobStatus,
+    MediaTodoStatus,
     Platform,
     PlatformResult,
     PlatformTaskPayload,
@@ -483,6 +484,24 @@ class Repository:
     def get_job(self, job_id: str) -> models.Job | None:
         return self.session.get(models.Job, job_id)
 
+    def resolve_job(self, job_id: str) -> models.Job | None:
+        job = self.get_job(job_id)
+        if job:
+            return job
+        normalized = job_id if job_id.startswith("job_") else f"job_{job_id}"
+        if normalized != job_id:
+            job = self.get_job(normalized)
+            if job:
+                return job
+        matches = list(
+            self.session.scalars(
+                select(models.Job).where(models.Job.id.startswith(normalized)).order_by(models.Job.created_at.desc())
+            ).all()
+        )
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
     def list_jobs(
         self,
         *,
@@ -577,3 +596,76 @@ class Repository:
                 event_payload=payload,
             )
         )
+
+    def create_media_todo(
+        self,
+        title: str,
+        platforms: list[Platform | str],
+        *,
+        notes: str | None = None,
+        job_id: str | None = None,
+    ) -> models.MediaTodo:
+        platform_values = [str(p) for p in platforms]
+        todo = models.MediaTodo(
+            title=title,
+            notes=notes,
+            platforms=platform_values,
+            completed_platforms=[],
+            status=MediaTodoStatus.PENDING.value,
+            job_id=job_id,
+        )
+        self.session.add(todo)
+        self.session.flush()
+        self.audit("media_todo.created", {"todo_id": todo.id, "title": title, "platforms": platform_values})
+        return todo
+
+    def list_media_todos(
+        self,
+        *,
+        status: MediaTodoStatus | str | None = None,
+        limit: int = 50,
+    ) -> list[models.MediaTodo]:
+        stmt = select(models.MediaTodo).order_by(models.MediaTodo.created_at.desc()).limit(limit)
+        if status:
+            stmt = stmt.where(models.MediaTodo.status == str(status))
+        return list(self.session.scalars(stmt).all())
+
+    def resolve_media_todo(self, todo_id: str) -> models.MediaTodo | None:
+        todo = self.session.get(models.MediaTodo, todo_id)
+        if todo:
+            return todo
+        matches = list(
+            self.session.scalars(
+                select(models.MediaTodo)
+                .where(models.MediaTodo.id.startswith(todo_id))
+                .order_by(models.MediaTodo.created_at.desc())
+            ).all()
+        )
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def check_media_todo_platform(
+        self,
+        todo_id: str,
+        platform: Platform | str,
+    ) -> models.MediaTodo:
+        todo = self.resolve_media_todo(todo_id)
+        if not todo:
+            raise ValueError(f"Media todo not found: {todo_id}")
+        platform_value = str(platform)
+        if platform_value not in todo.platforms:
+            raise ValueError(f"Platform {platform_value} is not tracked for todo {todo.id}")
+        completed = list(todo.completed_platforms or [])
+        if platform_value not in completed:
+            completed.append(platform_value)
+            todo.completed_platforms = completed
+        if set(completed) >= set(todo.platforms):
+            todo.status = MediaTodoStatus.COMPLETED.value
+            todo.completed_at = utcnow()
+        self.session.flush()
+        self.audit(
+            "media_todo.platform_checked",
+            {"todo_id": todo.id, "platform": platform_value, "status": todo.status},
+        )
+        return todo
