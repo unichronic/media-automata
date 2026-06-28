@@ -296,3 +296,22 @@ def test_scheduled_task_survives_database_reopen(tmp_path: Path) -> None:
         claimed = repo.claim_next_task("worker_after_restart")
         assert claimed is not None
         assert claimed.job_id == "job_restart"
+
+
+def test_reconcile_stale_jobs_frees_concurrency_slot() -> None:
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+
+    with Session(engine) as session:
+        repo = Repository(session, Settings())
+        stale = repo.create_job(requested_by_user_id=None, whatsapp_message_id="stale-1", raw_command="/post hello")
+        stale.created_at = datetime.now(UTC) - timedelta(hours=2)
+        session.flush()
+        active = repo.create_job(requested_by_user_id=None, whatsapp_message_id="active-1", raw_command="/post world")
+        repo.set_job_status(active, JobStatus.PARSED)
+        repo.set_job_status(active, JobStatus.PLANNED)
+        repo.set_job_status(active, JobStatus.QUEUED)
+
+        assert repo.reconcile_stale_jobs() == 1
+        assert stale.status == JobStatus.FAILED.value
+        assert repo.count_active_jobs() == 1

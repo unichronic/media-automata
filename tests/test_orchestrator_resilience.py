@@ -154,3 +154,37 @@ async def test_malformed_base64_media_is_recorded_as_failure(tmp_path, monkeypat
         assert job.status == JobStatus.FAILED.value
         assert graph.calls == 0
         assert "media could not be processed" in outcome.message
+
+
+@pytest.mark.asyncio
+async def test_orchestration_exception_marks_job_failed(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    class ExplodingGraph:
+        async def run(self, _: str, *, media_asset_ids: list[str]) -> AgentPlan:
+            raise ValueError("hour must be in 0..23")
+
+    engine = create_engine("sqlite:///:memory:", future=True)
+    Base.metadata.create_all(engine)
+    whatsapp = StubWhatsApp()
+    message = IncomingWhatsAppMessage(
+        message_id="explode",
+        from_number="919999999999",
+        chat_id="group@g.us",
+        body="/post to instagram at 22:15 june 26",
+    )
+
+    with Session(engine) as session:
+        outcome = await CommandOrchestrator(
+            settings=Settings(),
+            session=session,
+            agent_graph=cast(Any, ExplodingGraph()),
+            whatsapp=cast(Any, whatsapp),
+        ).process_whatsapp_message(message)
+        session.commit()
+        job = session.scalar(select(models.Job).where(models.Job.id == outcome.job_id))
+
+        assert outcome.handled is True
+        assert job is not None
+        assert job.status == JobStatus.FAILED.value
+        assert "ValueError" in outcome.message

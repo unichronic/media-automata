@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -30,6 +30,12 @@ from media_automata.schemas import (
 from media_automata.state import assert_job_transition, assert_task_transition
 
 PROFILE_LOCK_STALE_AFTER = timedelta(minutes=30)
+STALE_JOB_AFTER = timedelta(minutes=15)
+PRE_TASK_JOB_STATUSES = {
+    JobStatus.RECEIVED.value,
+    JobStatus.PARSED.value,
+    JobStatus.PLANNED.value,
+}
 
 
 def utcnow() -> datetime:
@@ -557,13 +563,38 @@ class Repository:
             stmt = stmt.where(models.Job.id.in_(task_job_ids))
         return list(self.session.scalars(stmt).all())
 
+    def reconcile_stale_jobs(self, *, stale_after: timedelta = STALE_JOB_AFTER) -> int:
+        """Fail pre-task jobs that have made no progress and have no platform tasks."""
+        cutoff = utcnow() - stale_after
+        stale_jobs = self.session.scalars(
+            select(models.Job).where(
+                models.Job.status.in_(PRE_TASK_JOB_STATUSES),
+                models.Job.created_at < cutoff,
+            )
+        ).all()
+        reconciled = 0
+        for job in stale_jobs:
+            task_count = int(
+                self.session.scalar(
+                    select(func.count())
+                    .select_from(models.PlatformTask)
+                    .where(models.PlatformTask.job_id == job.id)
+                )
+                or 0
+            )
+            if task_count:
+                continue
+            self.set_job_status(job, JobStatus.FAILED, {"reason": "stale_job_reconciled"})
+            reconciled += 1
+        return reconciled
+
     def count_active_jobs(self) -> int:
+        self.reconcile_stale_jobs()
         active_statuses = {
-            JobStatus.RECEIVED.value,
-            JobStatus.PARSED.value,
-            JobStatus.PLANNED.value,
             JobStatus.QUEUED.value,
             JobStatus.EXECUTING.value,
+            JobStatus.PARSED.value,
+            JobStatus.PLANNED.value,
         }
         jobs = self.session.scalars(select(models.Job.id).where(models.Job.status.in_(active_statuses))).all()
         return len(jobs)

@@ -115,89 +115,104 @@ class CommandOrchestrator:
             return await self._reply(message, f"Job {job.id} already exists with status {status}.", job_id=job.id)
 
         try:
-            asset_ids = await self._store_message_media(message)
-        except Exception as exc:
-            self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "media_processing_failed"})
+            try:
+                asset_ids = await self._store_message_media(message)
+            except Exception as exc:
+                self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "media_processing_failed"})
+                self._commit_progress()
+                text = f"Job {job.id} failed: WhatsApp media could not be processed ({type(exc).__name__})."
+                await self._send_text_safely(message.chat_id, text)
+                return CommandOutcome(handled=True, job_id=job.id, message=text)
             self._commit_progress()
-            text = f"Job {job.id} failed: WhatsApp media could not be processed ({type(exc).__name__})."
-            await self._send_text_safely(message.chat_id, text)
-            return CommandOutcome(handled=True, job_id=job.id, message=text)
-        self._commit_progress()
 
-        plan = await self.agent_graph.run(message.body, media_asset_ids=asset_ids)
-        self.repo.set_job_intent(job, plan.intent.model_dump(mode="json"), plan.intent.mode)
+            plan = await self.agent_graph.run(message.body, media_asset_ids=asset_ids)
+            self.repo.set_job_intent(job, plan.intent.model_dump(mode="json"), plan.intent.mode)
 
-        if plan.intent.intent not in {"publish", "draft", "schedule"}:
-            self.repo.set_job_status(job, JobStatus.FAILED, {"reason": f"Unsupported intent: {plan.intent.intent}"})
-            self._commit_progress()
-            return await self._reply(
-                message, f"Job {job.id} failed: unsupported intent {plan.intent.intent}.", job_id=job.id
-            )
+            if plan.intent.intent not in {"publish", "draft", "schedule"}:
+                self.repo.set_job_status(job, JobStatus.FAILED, {"reason": f"Unsupported intent: {plan.intent.intent}"})
+                self._commit_progress()
+                return await self._reply(
+                    message, f"Job {job.id} failed: unsupported intent {plan.intent.intent}.", job_id=job.id
+                )
 
-        if plan.intent.missing_fields:
-            self.repo.set_job_status(job, JobStatus.FAILED, {"missing_fields": plan.intent.missing_fields})
+            if plan.intent.missing_fields:
+                self.repo.set_job_status(job, JobStatus.FAILED, {"missing_fields": plan.intent.missing_fields})
+                self._commit_progress()
+                return await self._reply(
+                    message,
+                    f"Job {job.id} needs more information: {', '.join(plan.intent.missing_fields)}.",
+                    job_id=job.id,
+                )
+
+            if not asset_ids and _expects_media_from_context(message.body):
+                publishable_contents = [
+                    content for content in plan.platform_contents if not _content_requires_input_media(content)
+                ]
+                if not publishable_contents:
+                    self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "expected_media_not_received"})
+                    self._commit_progress()
+                    return await self._reply(
+                        message,
+                        f"Job {job.id} failed: I could not read the quoted or attached media from WhatsApp. "
+                        "Send the image again with the command as its caption, or retry after the gateway reconnects.",
+                        job_id=job.id,
+                    )
+                if len(publishable_contents) != len(plan.platform_contents):
+                    plan = plan.model_copy(update={"platform_contents": publishable_contents})
+
+            self.repo.set_job_content_plan(job, self._content_plan_payload(plan))
+
+            scheduled_for = None
+            if plan.intent.intent == "schedule" or plan.intent.mode == JobMode.SCHEDULE:
+                scheduled_for = parse_scheduled_for(message.body, plan.intent.scheduled_for)
+                if not scheduled_for:
+                    self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "scheduled_for_not_parsed"})
+                    self._commit_progress()
+                    return await self._reply(
+                        message,
+                        f"Job {job.id} failed: I could not parse the scheduled time.",
+                        job_id=job.id,
+                    )
+                if not is_future_schedule(scheduled_for):
+                    self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "scheduled_for_in_past"})
+                    self._commit_progress()
+                    return await self._reply(
+                        message, f"Job {job.id} failed: scheduled time is in the past.", job_id=job.id
+                    )
+                self.repo.set_job_scheduled_for(job, scheduled_for)
+
+            for content in plan.platform_contents:
+                payload = PlatformTaskPayload(
+                    job_id=job.id,
+                    platform=content.platform,
+                    account=plan.intent.account,
+                    mode=plan.intent.mode,
+                    content=content,
+                    scheduled_for=scheduled_for,
+                    raw_intent=plan.intent.model_dump(mode="json"),
+                )
+                self.repo.ensure_browser_profile(content.platform, plan.intent.account)
+                self.repo.create_platform_task(payload, scheduled_for=scheduled_for)
+
+            self.repo.set_job_status(job, JobStatus.QUEUED)
             self._commit_progress()
             return await self._reply(
                 message,
-                f"Job {job.id} needs more information: {', '.join(plan.intent.missing_fields)}.",
+                self._job_created_text(job.id, plan, scheduled_for=scheduled_for),
                 job_id=job.id,
             )
-
-        if not asset_ids and _expects_media_from_context(message.body):
-            publishable_contents = [
-                content for content in plan.platform_contents if not _content_requires_input_media(content)
-            ]
-            if not publishable_contents:
-                self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "expected_media_not_received"})
-                self._commit_progress()
-                return await self._reply(
-                    message,
-                    f"Job {job.id} failed: I could not read the quoted or attached media from WhatsApp. "
-                    "Send the image again with the command as its caption, or retry after the gateway reconnects.",
-                    job_id=job.id,
-                )
-            if len(publishable_contents) != len(plan.platform_contents):
-                plan = plan.model_copy(update={"platform_contents": publishable_contents})
-
-        self.repo.set_job_content_plan(job, self._content_plan_payload(plan))
-
-        scheduled_for = None
-        if plan.intent.intent == "schedule" or plan.intent.mode == JobMode.SCHEDULE:
-            scheduled_for = parse_scheduled_for(message.body, plan.intent.scheduled_for)
-            if not scheduled_for:
-                self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "scheduled_for_not_parsed"})
-                self._commit_progress()
-                return await self._reply(
-                    message,
-                    f"Job {job.id} failed: I could not parse the scheduled time.",
-                    job_id=job.id,
-                )
-            if not is_future_schedule(scheduled_for):
-                self.repo.set_job_status(job, JobStatus.FAILED, {"reason": "scheduled_for_in_past"})
-                self._commit_progress()
-                return await self._reply(message, f"Job {job.id} failed: scheduled time is in the past.", job_id=job.id)
-            self.repo.set_job_scheduled_for(job, scheduled_for)
-
-        for content in plan.platform_contents:
-            payload = PlatformTaskPayload(
-                job_id=job.id,
-                platform=content.platform,
-                account=plan.intent.account,
-                mode=plan.intent.mode,
-                content=content,
-                scheduled_for=scheduled_for,
-                raw_intent=plan.intent.model_dump(mode="json"),
+        except Exception as exc:
+            self.repo.set_job_status(
+                job,
+                JobStatus.FAILED,
+                {"reason": "orchestration_failed", "error": f"{type(exc).__name__}: {exc}"},
             )
-            self.repo.ensure_browser_profile(content.platform, plan.intent.account)
-            self.repo.create_platform_task(payload, scheduled_for=scheduled_for)
-
-        self.repo.set_job_status(job, JobStatus.QUEUED)
-        self._commit_progress()
-        return await self._reply(
-            message,
-            self._job_created_text(job.id, plan, scheduled_for=scheduled_for),
-            job_id=job.id,
-        )
+            self._commit_progress()
+            return await self._reply(
+                message,
+                f"Job {job.id} failed: {type(exc).__name__}.",
+                job_id=job.id,
+            )
 
     async def _handle_status(self, message: IncomingWhatsAppMessage) -> CommandOutcome:
         job_ref = _extract_job_ref(message.body)
