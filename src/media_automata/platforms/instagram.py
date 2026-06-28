@@ -99,6 +99,10 @@ def video_is_portrait(path: str) -> bool:
         return False
 
 
+def upload_crop_ratio_labels(*, reel_portrait: bool) -> tuple[str, ...]:
+    return ("9:16", "Original") if reel_portrait else ("Original", "4:5")
+
+
 def classify_instagram_auth_state(
     text: str,
     url: str,
@@ -399,8 +403,9 @@ class InstagramWorker(BrowserUsePlatformWorker):
                 )
             return await upload_surface_ready(page)
 
-        async def preserve_reel_upload_crop(page) -> None:
-            """Instagram defaults video uploads to a square crop; force 9:16 for vertical reels."""
+        async def preserve_upload_crop(page, *, reel_portrait: bool = False) -> None:
+            """Instagram defaults uploads to a square crop; preserve source aspect when possible."""
+            ratio_labels = upload_crop_ratio_labels(reel_portrait=reel_portrait)
             for attempt in range(4):
                 page_text = (await body_text(page)).lower()
                 if "crop" not in page_text:
@@ -416,26 +421,17 @@ class InstagramWorker(BrowserUsePlatformWorker):
                 if not opened:
                     return
                 await page.wait_for_timeout(700)
-                if await click_any(
-                    page,
-                    [
-                        ("ratio-9-16-text", lambda: page.get_by_text("9:16", exact=True)),
-                        ("ratio-9-16-role", lambda: page.get_by_role("button", name="9:16")),
-                    ],
-                    timeout=2000,
-                ):
-                    await page.wait_for_timeout(500)
-                    return
-                if await click_any(
-                    page,
-                    [
-                        ("original-text", lambda: page.get_by_text("Original", exact=True)),
-                        ("original-role", lambda: page.get_by_role("button", name="Original")),
-                    ],
-                    timeout=2000,
-                ):
-                    await page.wait_for_timeout(500)
-                    return
+                for label in ratio_labels:
+                    if await click_any(
+                        page,
+                        [
+                            (f"ratio-{label.lower()}-text", lambda value=label: page.get_by_text(value, exact=True)),
+                            (f"ratio-{label.lower()}-role", lambda value=label: page.get_by_role("button", name=value)),
+                        ],
+                        timeout=2000,
+                    ):
+                        await page.wait_for_timeout(500)
+                        return
                 if attempt == 0:
                     await click_any(
                         page,
@@ -589,9 +585,8 @@ class InstagramWorker(BrowserUsePlatformWorker):
                     )
                 await page.wait_for_timeout(9000 if is_reel else 4000)
                 await screenshot(page, "file-selected")
-                if is_reel and video_is_portrait(media[0]):
-                    await preserve_reel_upload_crop(page)
-                    await screenshot(page, "crop-adjusted")
+                await preserve_upload_crop(page, reel_portrait=is_reel and video_is_portrait(media[0]))
+                await screenshot(page, "crop-adjusted")
 
                 await next_steps(page)
                 await screenshot(page, "caption-step")
